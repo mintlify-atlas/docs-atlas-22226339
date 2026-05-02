@@ -1,0 +1,143 @@
+---
+title: "Connect pwndbg to IDA, Binary Ninja, and Ghidra"
+description: "Sync decompiler context, symbols, and local variables into pwndbg using the decomp2dbg integration for IDA Pro, Binary Ninja, Ghidra, and angr-management."
+---
+
+Pwndbg can display a live decompilation window and synchronize symbols from your decompiler into the debugger session. When you step through code, the decompiler context panel updates to show the decompiled function at the current program counter, annotated with local variable names and values. This works for both GDB and LLDB.
+
+The integration is built on [decomp2dbg](https://github.com/mahaloz/decomp2dbg), an open-source project that runs an XML-RPC server inside the decompiler and exposes the decompilation data to the debugger. Pwndbg handles all the debugger-side logic; decomp2dbg handles the decompiler-side plugins.
+
+<Note>
+IDA Pro and Binary Ninja require a paid license to use plugins. Their free versions do not support the plugin API that decomp2dbg requires. Ghidra and angr-management are free and open source.
+</Note>
+
+## Setup
+
+<Steps>
+  <Step title="Install the decompiler plugin">
+    Run `di install` inside pwndbg, passing the name of your decompiler. Do not install decomp2dbg manually — pwndbg installs the correct version and sets up the necessary symlinks.
+
+    <Tabs>
+      <Tab title="IDA Pro">
+        ```text
+        di install ida
+        ```
+        The plugin is installed to `~/.idapro/plugins` by default. You can change the path with the `decompiler-ida-plugin-path` config option.
+      </Tab>
+      <Tab title="Binary Ninja">
+        ```text
+        di install binja
+        ```
+        The plugin is installed to `~/.binaryninja/plugins` by default. You can change the path with the `decompiler-binja-plugin-path` config option.
+      </Tab>
+      <Tab title="Ghidra">
+        ```text
+        di install ghidra
+        ```
+      </Tab>
+      <Tab title="angr-management">
+        ```text
+        di install angr
+        ```
+        The plugin is installed to `~/.local/share/angr-management/plugins` by default. You can change the path with the `decompiler-angr-plugin-path` config option.
+      </Tab>
+    </Tabs>
+  </Step>
+
+  <Step title="Start the decompiler server">
+    Open your binary in the decompiler, then press `Ctrl+Shift+D` and click **OK** to start the XML-RPC server inside the decompiler plugin. The server listens on `localhost:3662` by default. You can change the host and port with the `decompiler-host` and `decompiler-port` config options.
+  </Step>
+
+  <Step title="Connect from pwndbg">
+    Inside pwndbg, run:
+
+    ```text
+    di connect
+    ```
+
+    If your debugged process is already running at the time you connect, `di connect` will automatically run `di sync` to pull in symbols. If the process is not yet running, start it first and then run:
+
+    ```text
+    di sync
+    ```
+  </Step>
+</Steps>
+
+For a full list of `decompiler-integration` subcommands, run:
+
+```text
+decompiler-integration --help
+```
+
+## Symbol syncing
+
+Pwndbg applies the decompiler's symbols to the debugger session so you can use them directly in expressions and commands.
+
+**Functions and global variables** are synced on demand by running `di sync`. Syncing all symbols can be slow for large binaries, so it is not automatic by default. Re-run `di sync` whenever you want to pick up new names from the decompiler.
+
+**Function-local variables** are synced automatically on every stop (controlled by the `decompiler-autosync-vars` config, which defaults to `on`). Local variables are added as convenience variables with a `$` prefix, so you can use them directly:
+
+```text
+print $decompiled_var_name
+print *$decompiled_var_name
+```
+
+In GDB, local variables carry type information, so pointer dereferences like `print *$ptr` resolve correctly. In LLDB, all local variables are typed as `void*`.
+
+### Automatic symbol syncing
+
+To sync functions and global variables automatically on every stop, enable:
+
+```text
+set decompiler-autosync-syms on
+```
+
+This is disabled by default because syncing the full symbol table is expensive for large binaries. Use it when you need symbols to stay continuously up to date and performance is acceptable.
+
+## Decompiler context window
+
+When connected, pwndbg adds a **decompiler** (ghidra) context section that shows the decompiled version of the current function with the current source line highlighted. This section appears in the context display alongside registers, disassembly, and stack.
+
+The context panel also shows decompiler-derived annotations inline in the disassembly view and when using `telescope`.
+
+## Inspecting variables across the backtrace
+
+To list local variables and arguments for every function in the current call stack, run:
+
+```text
+di list --all
+```
+
+This is useful when you need to trace what values were passed across multiple frames without switching frames manually.
+
+## All subcommands
+
+The `decompiler-integration` command (alias: `di`) exposes the following subcommands:
+
+| Subcommand | Aliases | Description |
+| :--- | :--- | :--- |
+| `di install <decompiler>` | — | Install the decompiler plugin (ida, binja, ghidra, angr) |
+| `di connect` | `di c` | Connect to the running decompiler server |
+| `di disconnect` | `di d` | Disconnect from the decompiler |
+| `di sync` | `di s` | Pull in functions, global variables, and local variables from the decompiler |
+| `di jump [addr]` | `di j` | Make the decompiler cursor jump to the current PC (or a given address) |
+| `di list [-a]` | `di l` | List local variables for the current frame; `-a` shows all frames |
+| `di setbase <addr>` | — | Manually override the base address of the decompiled binary |
+| `di setpath <path>` | — | Manually override the file path used to find the binary in memory mappings |
+
+<Tip>
+`di setbase` and `di setpath` are useful when debugging kernel modules or when the binary path reported by the decompiler doesn't match what appears in `vmmap`. To reset automatic detection, set the address to `-1` or the path to `""`.
+</Tip>
+
+## Supported decompilers
+
+| Decompiler        | License required | Notes                        |
+| ----------------- | ---------------- | ---------------------------- |
+| IDA Pro           | Paid             | Full support including comments (other decompilers planned) |
+| Binary Ninja      | Paid             | Full support                 |
+| Ghidra            | Free             | Full support                 |
+| angr-management   | Free             | Full support                 |
+
+<Tip>
+Even if you already have decomp2dbg installed separately, running `di install` will replace it with pwndbg's managed version. You can still use decomp2dbg outside of pwndbg after doing so.
+</Tip>

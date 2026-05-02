@@ -1,0 +1,345 @@
+---
+title: "External tool integrations: ROP gadgets, r2, and AI"
+description: "Invoke ROPgadget, Ropper, radare2, rizin, and decompiler plugins from pwndbg with the binary base and current PC passed through automatically."
+---
+
+Pwndbg can invoke several external analysis tools without leaving your GDB session. The integrations pass the current binary, base address, and PC position automatically, so you can pivot from a breakpoint into a disassembler, gadget finder, or AI-assisted analysis with minimal friction. Each tool must be installed separately.
+
+## ROP gadget finders
+
+### `rop`
+
+Runs [ROPgadget](https://github.com/JonathanSalwan/ROPgadget) against the loaded binary and displays the results. The alias `ropgadget` is also accepted.
+
+**Requires:** `ROPgadget` (`pip install ropgadget`)
+
+```bash
+rop [--grep GREP] [--memlimit MEMLIMIT] [--symbols] [--plain] [arguments ...]
+```
+
+<ParamField path="arguments" type="string[]" optional>
+  Additional arguments passed directly to ROPgadget (use `--` to separate pwndbg flags from ROPgadget flags).
+</ParamField>
+
+<ParamField path="--grep GREP" type="string" optional>
+  Filter output lines by a substring.
+</ParamField>
+
+<ParamField path="--memlimit MEMLIMIT" type="string" optional>
+  Maximum size of memory pages to scan. Defaults to `50MB`.
+</ParamField>
+
+<ParamField path="--symbols" type="flag" optional>
+  Show symbol names for gadget addresses where available.
+</ParamField>
+
+<ParamField path="--plain" type="flag" optional>
+  Disable syntax highlighting in the output.
+</ParamField>
+
+**Example**
+
+```text
+pwndbg> rop --grep 'pop rdi' -- --nojop
+Gadgets information
+============================================================
+0x0007dce8 : pop rdi ; or dword ptr [rax], eax ; add rsp, 0x28 ; ret
+0x0007d838 : pop rdi ; or dword ptr [rax], eax ; je 0x7d840 ; ret
+0x0005b13d : pop rdi ; pop rbp ; ret
+0x0001ee23 : pop rdi ; ret
+
+Unique gadgets found: 8514
+```
+
+---
+
+### `ropper`
+
+<Note>GDB only</Note>
+
+Runs [Ropper](https://github.com/sashs/Ropper) against the loaded binary. Pass arguments after `--` to send them directly to ropper.
+
+**Requires:** `ropper` (`pip install ropper`)
+
+```bash
+ropper [argument ...]
+```
+
+<ParamField path="argument" type="string[]" optional>
+  Arguments to pass to ropper. Use `--` before ropper-specific flags.
+</ParamField>
+
+**Examples**
+
+<CodeGroup>
+
+```bash Open the interactive ropper console
+ropper -- --console
+```
+
+```bash Search for a gadget
+ropper -- --search 'pop rdi; ret;'
+```
+
+</CodeGroup>
+
+**Example output**
+
+```text
+pwndbg> ropper -- --search 'pop rdi; ret;'
+[INFO] Load gadgets from cache
+[LOAD] loading... 100%
+[LOAD] removing double gadgets... 100%
+[INFO] Searching for gadgets: pop rdi; ret;
+
+[INFO] File: /usr/bin/bash
+0x000000000001ee23: pop rdi; ret;
+```
+
+---
+
+## radare2
+
+### `r2`
+
+Launches [radare2](https://rada.re) with the current binary loaded. Pwndbg automatically seeks to the current PC and rebases the binary to match the live memory layout for PIE binaries. The alias `radare2` is also accepted.
+
+**Requires:** `radare2` (install via your package manager or from the radare2 repository)
+
+```bash
+r2 [--no-seek] [--no-rebase] [arguments ...]
+```
+
+<ParamField path="arguments" type="string[]" optional>
+  Arguments passed to `radare2`. Use `--` to separate pwndbg flags from r2 flags.
+</ParamField>
+
+<ParamField path="--no-seek" type="flag" optional>
+  Do not seek to the current PC on startup.
+</ParamField>
+
+<ParamField path="--no-rebase" type="flag" optional>
+  Do not set the base address for PIE based on the current memory mapping.
+</ParamField>
+
+**Example**
+
+```text
+pwndbg> r2 -- -S -AA
+WARN: Relocs has not been applied. Please use `-e bin.relocs.apply=true` or `-e bin.cache=true` next time
+INFO: Analyze all flags starting with sym. and entry0 (aa)
+INFO: Debugger commands disabled in sandbox mode
+[0x0001d3d0]>
+```
+
+---
+
+### `r2pipe`
+
+Sends individual radare2 commands through an r2pipe session, keeping the session stateful between calls. Useful for scripting r2 queries without entering the interactive shell.
+
+**Requires:** `radare2` and the `r2pipe` Python package (`pip install r2pipe`)
+
+```bash
+r2pipe arguments [arguments ...]
+```
+
+<ParamField path="arguments" type="string[]" required>
+  Command and arguments to pass to r2pipe.
+</ParamField>
+
+**Example**
+
+```text
+pwndbg> r2pipe pdf @ sym.main
+            ; ICOD XREF from entry0 @ 0x1d3e8(r)
+┌ 6786: int main (uint32_t argc, char **argv, char **envp);
+│ `- args(rdi, rsi, rdx) vars(21:sp[0x40..0x18c])
+│           0x0001b920      f30f1efa       endbr64
+│           0x0001b924      4157           push r15
+[...]
+```
+
+---
+
+## rizin
+
+### `rz`
+
+Launches [rizin](https://rizin.re) with the current binary loaded, seeking to the current PC and rebasing for PIE. The alias `rizin` is also accepted.
+
+**Requires:** `rizin` (install from the rizin repository or your package manager)
+
+```bash
+rz [--no-seek] [--no-rebase] [arguments ...]
+```
+
+<ParamField path="arguments" type="string[]" optional>
+  Arguments passed to `rizin`. Use `--` to separate pwndbg flags from rizin flags.
+</ParamField>
+
+<ParamField path="--no-seek" type="flag" optional>
+  Do not seek to the current PC on startup.
+</ParamField>
+
+<ParamField path="--no-rebase" type="flag" optional>
+  Do not set the base address for PIE based on the current memory mapping.
+</ParamField>
+
+**Example**
+
+```text
+pwndbg> rz -- -AA
+[x] Analyze all flags starting with sym. and entry0 (aa)
+[x] Analyze function calls
+[x] Enable constraint types analysis for variables
+[0x0001d3d0]>
+```
+
+---
+
+### `rzpipe`
+
+Sends individual rizin commands through an rzpipe session, keeping state between invocations.
+
+**Requires:** `rizin` and the `rzpipe` Python package (`pip install rzpipe`)
+
+```bash
+rzpipe arguments [arguments ...]
+```
+
+<ParamField path="arguments" type="string[]" required>
+  Command and arguments to pass to rzpipe.
+</ParamField>
+
+**Example**
+
+```text
+pwndbg> rzpipe pdf @ sym.main
+            ; DATA XREF from entry0 @ 0x1d3e8
+┌ int main(int argc, char **argv, char **envp);
+│           ; arg int argc @ rdi
+│           0x0001b920      endbr64
+│           0x0001b924      push  r15
+[...]
+```
+
+---
+
+## Decompiler integration
+
+### `decomp`
+
+Decompiles code near a given address using the currently connected decompiler integration. Defaults to the current PC. Requires an active decompiler connection set up via [`decompiler-integration`](#decompiler-integration).
+
+```bash
+decomp [addr] [lines]
+```
+
+<ParamField path="addr" type="address" optional>
+  Address to decompile near. Defaults to the current PC.
+</ParamField>
+
+<ParamField path="lines" type="integer" optional>
+  Number of decompilation lines to display. Defaults to `14`.
+</ParamField>
+
+---
+
+### `decompiler-integration`
+
+Controls the pwndbg decompiler integration, which connects to IDA Pro, Binary Ninja, Ghidra, or angr-management. The alias `di` is also accepted.
+
+For full setup instructions, see the [decompiler integration guide](https://pwndbg.re/dev/tutorials/decompiler-integration/).
+
+```bash
+decompiler-integration {connect,disconnect,sync,jump,install,decomp,list,setbase,setpath}
+```
+
+**Subcommands**
+
+| Subcommand | Alias | Description |
+|---|---|---|
+| `connect` | `c` | Connect to the decompiler. Host and port are set via `decompiler-host` and `decompiler-port` config variables. |
+| `disconnect` | `d` | Disconnect from the decompiler. |
+| `sync` | `s` | Sync symbol and variable data from the decompiler. See also `decompiler-autosync-syms` and `decompiler-autosync-vars`. |
+| `jump [addr]` | `j` | Move the decompiler's cursor to the current PC, or to `addr` if specified. See `decompiler-autojump`. |
+| `install {ida,binja,ghidra,angr}` | — | Install or update the decompiler plugin (powered by [decomp2dbg](https://github.com/mahaloz/decomp2dbg)). |
+| `list [-a]` | `l` | List decompiler-derived stack variables for the current frame. Pass `-a` to show all frames. |
+| `setbase addr` | — | Manually set the base memory address of the decompiled binary. |
+| `setpath path` | — | Manually set the binary path as it appears in memory mappings. |
+
+<Note>
+  Do not source `decomp2dbg/d2d.py` in your `~/.gdbinit` alongside this integration — pwndbg implements the debugger-side logic independently and the two may conflict.
+</Note>
+
+**Installing a decompiler plugin**
+
+```bash
+decompiler-integration install ghidra
+decompiler-integration install ida
+decompiler-integration install binja
+decompiler-integration install angr
+```
+
+---
+
+## AI assistance
+
+### `ai`
+
+<Note>GDB only</Note>
+
+Sends a question about the current debugging context to OpenAI's GPT model. Pwndbg includes relevant debugger state in the prompt so the model has context about what you are debugging.
+
+**Requires:** An OpenAI API key configured in your environment (`OPENAI_API_KEY`).
+
+```bash
+ai [-M MODEL] [-t TEMPERATURE] [-m MAX_TOKENS] [-v] [-L] [-c COMMAND] [question ...]
+```
+
+<ParamField path="question" type="string[]" optional>
+  The question to ask.
+</ParamField>
+
+<ParamField path="-M / --model MODEL" type="string" optional>
+  The OpenAI model to use.
+</ParamField>
+
+<ParamField path="-t / --temperature TEMPERATURE" type="float" optional>
+  Sampling temperature for the model response.
+</ParamField>
+
+<ParamField path="-m / --max-tokens MAX_TOKENS" type="integer" optional>
+  Maximum number of tokens to generate.
+</ParamField>
+
+<ParamField path="-v / --verbose" type="flag" optional>
+  Print the full prompt and raw response.
+</ParamField>
+
+<ParamField path="-L / --list-models" type="flag" optional>
+  List the available OpenAI models.
+</ParamField>
+
+<ParamField path="-c / --command COMMAND" type="string" optional>
+  Run a GDB command and include its output in the question sent to the model.
+</ParamField>
+
+**Examples**
+
+<CodeGroup>
+
+```bash Ask a question
+ai what does this function do
+```
+
+```bash Ask about command output
+ai -c 'disassemble main' explain the prologue
+```
+
+```bash List available models
+ai -L
+```
+
+</CodeGroup>

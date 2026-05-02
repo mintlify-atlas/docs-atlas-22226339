@@ -1,0 +1,316 @@
+---
+title: "Process inspection and live memory manipulation commands"
+description: "View PID, UID, open FDs, and SELinux labels; kill threads; patch live instructions; assemble shellcode; and redirect file descriptors in pwndbg."
+---
+
+These commands let you inspect and manipulate the running process from within pwndbg. They cover process identity (PID, open file descriptors, UID), thread control, live instruction patching, shellcode assembly, type inspection, and file descriptor redirection. Several commands here complement the ELF and Linux commands on the [Linux, libc, and ELF](/commands/linux-elf) page.
+
+## Process information
+
+### `procinfo`
+
+Displays information about the running process, including UID, GID, SELinux labels, and open file descriptors pulled from `/proc/<pid>`.
+
+```bash
+procinfo
+```
+
+---
+
+### `pid`
+
+Prints the PID of the current inferior process.
+
+**Alias:** `getpid`
+
+```bash
+pid
+```
+
+---
+
+## Thread control
+
+### `threads`
+
+Lists all threads belonging to the current inferior. For a full description of options, see [`threads`](/commands/linux-elf#threads) on the Linux, libc, and ELF page.
+
+```bash
+threads [-c] [num_threads]
+```
+
+---
+
+### `killthreads`
+
+<Note>GDB only</Note>
+
+Kills all or specified threads by calling `pthread_exit(0)` on each target thread while holding the scheduler lock. This prevents other threads from executing during the operation.
+
+A common use case is reducing a multi-threaded process to a single thread before using GDB checkpoints to replay execution.
+
+```bash
+killthreads [-a] [thread_ids ...]
+```
+
+<ParamField path="thread_ids" type="integer[]" optional>
+  GDB thread IDs to kill. Use `info threads` to list IDs.
+</ParamField>
+
+<ParamField path="-a / --all" type="flag" optional>
+  Kill all threads except the currently selected one.
+</ParamField>
+
+**Examples**
+
+<CodeGroup>
+
+```bash Kill a specific thread
+killthreads 2
+```
+
+```bash Kill all other threads
+killthreads -a
+```
+
+</CodeGroup>
+
+<Warning>
+  Killing threads with `pthread_exit` can leave shared resources (mutexes, file descriptors) in an inconsistent state. Use this primarily in controlled exploit-development scenarios.
+</Warning>
+
+---
+
+## Instruction patching
+
+### `patch`
+
+Replaces the instruction(s) at `address` with assembled `ins` code. Accepts architecture-native assembly syntax.
+
+```bash
+patch [-q] address ins
+```
+
+<ParamField path="address" type="address" required>
+  The address to patch.
+</ParamField>
+
+<ParamField path="ins" type="string" required>
+  Assembly instruction or instructions to write.
+</ParamField>
+
+<ParamField path="-q / --quiet" type="flag" optional>
+  Suppress output.
+</ParamField>
+
+---
+
+### `patch-list`
+
+Lists all active patches applied to the current process, showing the original bytes alongside the replacement.
+
+```bash
+patch-list
+```
+
+---
+
+### `patch-revert`
+
+Reverts the patch at a given address, restoring the original bytes.
+
+```bash
+patch-revert address
+```
+
+<ParamField path="address" type="address" required>
+  Address of the patch to revert.
+</ParamField>
+
+---
+
+## Shellcode assembly
+
+### `asm`
+
+Assembles one or more instructions into bytes and displays the result. Useful for quickly building shellcode snippets or verifying instruction encodings without leaving the debugger.
+
+```bash
+asm [-f {hex,string}] [--arch ARCH] [-i INFILE] [shellcode ...]
+```
+
+<ParamField path="shellcode" type="string[]" optional>
+  Assembly instructions to assemble.
+</ParamField>
+
+<ParamField path="-f / --format {hex,string}" type="string" optional>
+  Output format. `hex` (default) prints a hex byte string; `string` prints raw bytes.
+</ParamField>
+
+<ParamField path="--arch ARCH" type="string" optional>
+  Target architecture. Supported values include `amd64`, `i386`, `aarch64`, `arm`, `thumb`, `mips`, `riscv64`, and others. Defaults to the current debuggee's architecture.
+</ParamField>
+
+<ParamField path="-i / --infile INFILE" type="string" optional>
+  Read assembly from a file instead of the command line.
+</ParamField>
+
+**Examples**
+
+<CodeGroup>
+
+```bash Assemble a nop
+asm nop
+```
+
+```bash Assemble multiple instructions
+asm 'xor eax, eax; ret'
+```
+
+```bash Assemble for a specific architecture
+asm --arch aarch64 'mov x0, 0'
+```
+
+</CodeGroup>
+
+---
+
+## Type inspection
+
+### `dt`
+
+Dumps the layout of a C/C++ type known to the debugger, optionally overlaying it on a live address to show field values. Type names with spaces must be quoted.
+
+```bash
+dt typename [address]
+```
+
+<ParamField path="typename" type="string" required>
+  The type to display (e.g. `ucontext_t`, `"struct malloc_state"`).
+</ParamField>
+
+<ParamField path="address" type="address" optional>
+  Address in the process to overlay the type onto.
+</ParamField>
+
+**Examples**
+
+<CodeGroup>
+
+```bash Dump type layout
+dt ucontext_t
+```
+
+```bash Overlay type on an address
+dt "struct malloc_state" 0x7ffff7fb7b80
+```
+
+</CodeGroup>
+
+---
+
+### `cymbol`
+
+<Note>GDB only</Note>
+
+Adds custom C structures to the debugger so you can use them with `dt` and other type-aware commands. Structures are compiled with `zig` (or a user-specified GCC) for the current target architecture and stored in `~/.cache/pwndbg/custom-structures/`.
+
+```bash
+cymbol {add,remove,edit,load,show,file,show-all} [name]
+```
+
+| Subcommand | Description |
+|---|---|
+| `cymbol add [--force] name` | Create and load a new custom structure definition. Opens an editor. |
+| `cymbol remove name` | Remove a structure and unload it from the debugger. |
+| `cymbol edit name` | Open the structure definition for editing and reload it. |
+| `cymbol load name` | Load a previously added structure into the debugger. |
+| `cymbol show name` | Print the source definition of a structure. |
+| `cymbol file [--name NAME] [--force] [--quiet] path` | Load structures from an existing header file. |
+| `cymbol show-all` | List all stored structure names. |
+
+<Tip>
+  Adding `cymbol file --force --quiet ./structs.h` to a folder-local `.gdbinit` automatically loads your project's types whenever you start debugging.
+</Tip>
+
+<Warning>
+  Use unique struct names to avoid conflicts with types already known to the debugger.
+</Warning>
+
+---
+
+## Cyclic patterns
+
+### `cyclic`
+
+Generates and searches De Bruijn cyclic patterns for buffer overflow offset discovery. For full documentation, see [`cyclic`](/commands/linux-elf#cyclic) on the Linux, libc, and ELF page.
+
+```bash
+cyclic [count]
+cyclic -l lookup_value
+cyclic -d
+```
+
+---
+
+## Binary security settings
+
+### `checksec`
+
+Prints security properties of the target binary (RELRO, stack canary, NX, PIE, SHSTK, IBT). For full documentation, see [`checksec`](/commands/linux-elf#checksec) on the Linux, libc, and ELF page.
+
+```bash
+checksec [-f FILE]
+```
+
+---
+
+## Interactive Python
+
+### `ipi`
+
+<Note>GDB only</Note>
+
+Starts an interactive IPython shell inside the pwndbg process. You have access to all of pwndbg's internal APIs and the GDB Python bindings. Press `Ctrl-D` or call `exit()` to return to the debugger.
+
+```bash
+ipi
+```
+
+---
+
+## File descriptor redirection
+
+### `hijack-fd`
+
+Replaces a file descriptor in the debugged process with a new file, socket, or device. Useful for redirecting a program's stdin/stdout/stderr to a socket during exploit development.
+
+```bash
+hijack-fd fdnum newfile
+```
+
+<ParamField path="fdnum" type="integer" required>
+  The file descriptor number to replace (e.g. `0` for stdin, `1` for stdout, `2` for stderr).
+</ParamField>
+
+<ParamField path="newfile" type="string" required>
+  The replacement target. Accepts:
+  - An absolute file path (e.g. `/dev/null`)
+  - A TCP socket: `127.0.0.1:80` or `tcp://[::1]:80`
+  - A UDP socket: `udp://example.com:80`
+  - An IPv6 socket: `tcp+ipv6://example.com:80`
+</ParamField>
+
+**Examples**
+
+<CodeGroup>
+
+```bash Redirect stdout to /dev/null
+hijack-fd 1 /dev/null
+```
+
+```bash Redirect stderr to a TCP socket
+hijack-fd 2 tcp://localhost:8888
+```
+
+</CodeGroup>

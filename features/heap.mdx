@@ -1,0 +1,192 @@
+---
+title: "Heap inspection: glibc ptmalloc2 and other allocators"
+description: "Visualize chunks, bins, tcache, and arenas for glibc ptmalloc2, jemalloc, and musl mallocng with commands built for exploit development."
+---
+
+pwndbg provides deep visibility into heap allocators directly from the debugger. The glibc ptmalloc2 commands are the most comprehensive: you can list every chunk on the heap, inspect every bin, visualize the heap layout with color-coded blocks, simulate a `free()` call, and search for fake chunk candidates. jemalloc and musl mallocng are also supported with their own dedicated command sets.
+
+## Chunk structure (glibc ptmalloc2)
+
+In glibc ptmalloc2, each allocation is preceded by a `malloc_chunk` header:
+
+```text
+struct malloc_chunk {
+    size_t prev_size;   /* size of previous chunk (if free) */
+    size_t size;        /* size of this chunk + flags in low bits */
+    /* free chunks only: */
+    struct malloc_chunk *fd;
+    struct malloc_chunk *bk;
+    /* large free chunks only: */
+    struct malloc_chunk *fd_nextsize;
+    struct malloc_chunk *bk_nextsize;
+};
+```
+
+The low three bits of `size` encode the `PREV_INUSE`, `IS_MMAPPED`, and `NON_MAIN_ARENA` flags. pwndbg decodes these automatically in all heap commands.
+
+## Listing chunks
+
+<Tabs>
+  <Tab title="heap">
+    `heap` iterates over chunks on the current arena's active heap and prints each one with its address, size, flags, and status:
+
+    ```text
+    heap
+    heap --count 20
+    heap 0x555555559000
+    heap 0x555555559000 0x55555555f000
+    heap --verbose
+    ```
+
+    `--verbose` prints every struct field, including unused ones. `--simple` prints the raw `malloc_chunk` struct without interpretation.
+  </Tab>
+  <Tab title="malloc-chunk">
+    `malloc-chunk` prints a single chunk at a given address:
+
+    ```text
+    malloc-chunk 0x555555559290
+    malloc-chunk 0x555555559290 --verbose
+    malloc-chunk 0x555555559290 --dump
+    malloc-chunk 0x555555559290 --next 5
+    ```
+
+    `--dump` appends a hexdump of the chunk's data. `--next N` continues printing the next N chunks after the given address.
+  </Tab>
+  <Tab title="vis-heap-chunks">
+    `vis-heap-chunks` (alias: `vis`) renders the heap as a color-coded block diagram, one line per chunk, making overlapping or corrupted chunks immediately visible:
+
+    ```text
+    vis
+    vis 20
+    vis 20 0x555555559000
+    vis --beyond-top
+    vis --no-skip
+    ```
+
+    Repeated content lines are collapsed by default. `--beyond-top` continues printing past the top chunk boundary. `--no-skip` disables line collapsing.
+  </Tab>
+</Tabs>
+
+## Arenas
+
+`arena` prints the `malloc_state` struct for the current thread's arena (or a specific one by address). `arenas` lists all arenas currently in use:
+
+```text
+arena
+arena 0x7f1234567b80
+arenas
+```
+
+`top-chunk` prints information about the arena's top chunk, which is where new allocations come from when all bins are empty:
+
+```text
+top-chunk
+```
+
+## Bins
+
+`bins` shows all bins for the current arena and tcache in one shot:
+
+```text
+bins
+bins 0x7f1234567b80
+```
+
+For targeted inspection, use the individual bin commands:
+
+<Tabs>
+  <Tab title="fastbins">
+    ```text
+    fastbins
+    fastbins --verbose
+    ```
+
+    Fast bins hold small free chunks (up to 80 bytes by default) in singly-linked lists, bypassing consolidation for speed.
+  </Tab>
+  <Tab title="tcache / tcachebins">
+    ```text
+    tcache
+    tcachebins
+    tcachebins --verbose
+    ```
+
+    The per-thread cache (introduced in glibc 2.26) is the first destination for freed chunks and the first source for new allocations. `tcache` prints the raw `tcache_perthread_struct`; `tcachebins` lists the chains in each slot.
+  </Tab>
+  <Tab title="smallbins / largebins / unsortedbin">
+    ```text
+    smallbins
+    largebins
+    unsortedbin
+    ```
+
+    Chunks that don't fit in the fast bin or tcache pass through the unsorted bin before being sorted into small or large bins. These commands show the doubly-linked list contents of each bin.
+  </Tab>
+</Tabs>
+
+## Analysis tools
+
+### hi — find which chunk owns an address
+
+`hi` searches all heaps to determine whether an address belongs to any chunk and, if so, prints that chunk:
+
+```text
+hi 0x555555559300
+hi 0x555555559300 --verbose
+hi 0x7f1234000050 --fake
+```
+
+`--fake` displays any memory as if it were a chunk, useful when investigating a potential fake chunk target.
+
+### find-fake-fast — locate fake chunk candidates
+
+`find-fake-fast` scans memory near a target address for values that could serve as a valid fastbin or tcache chunk `size` field, making it useful for house-of-spirit and similar attacks:
+
+```text
+find-fake-fast 0x555555558040
+find-fake-fast 0x555555558040 0x60
+find-fake-fast 0x555555558040 --align
+find-fake-fast 0x555555558040 --partial-overwrite
+```
+
+`--align` requires candidates to satisfy `MALLOC_ALIGNMENT` — mandatory for tcache and for all chunks when Safe Linking is active.
+
+### try-free — simulate a free call
+
+`try-free` checks what would happen if you called `free()` with a given address — whether it would succeed, land in the tcache, go to a bin, or trigger an allocator error:
+
+```text
+try-free 0x555555559290
+```
+
+This is invaluable when verifying an exploit primitive before triggering it.
+
+## Tracking allocations at runtime
+
+`track-heap` (GDB only) instruments `malloc`, `calloc`, `realloc`, and `free` to record every allocation and detect use-after-free conditions in real time:
+
+```text
+track-heap enable
+track-heap enable --hardware-breakpoints
+track-heap toggle-break
+track-heap disable
+```
+
+Once enabled, the `heap_tracker` context section shows live allocation activity on every stop. `toggle-break` controls whether a detected use-after-free pauses execution immediately.
+
+## Other supported allocators
+
+<Tabs>
+  <Tab title="jemalloc">
+    pwndbg includes a dedicated command group for jemalloc. Run `pwndbg -c jemalloc` inside the debugger for the full command list. The jemalloc commands require the target to be linked against jemalloc and for the allocator's internal structures to be readable.
+  </Tab>
+  <Tab title="musl mallocng">
+    musl libc's mallocng allocator is also supported. Run `pwndbg -c mallocng` for the available inspection commands. musl support is focused on chunk and group inspection.
+  </Tab>
+  <Tab title="Kernel allocators">
+    For kernel debugging via QEMU, pwndbg supports the Linux SLUB slab allocator and the buddy allocator. See the kernel debugging guide for details.
+  </Tab>
+</Tabs>
+
+<Note>
+All ptmalloc2 heap commands require the heap to be initialized (i.e. `malloc` must have been called at least once before running them). If you see an error about the heap not being initialized, set a breakpoint after the first allocation.
+</Note>

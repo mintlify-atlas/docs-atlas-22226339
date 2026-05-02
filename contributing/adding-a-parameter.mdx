@@ -1,0 +1,210 @@
+---
+title: "How to add typed configuration parameters to pwndbg"
+description: "How to add typed, scoped configuration options that integrate with pwndbg's config, theme, and heap-config commands and can be exported to config files."
+---
+
+pwndbg's configuration system lets users tune behavior and appearance through named parameters that are displayed in the `config`, `theme`, and `heap-config` commands and can be exported to persistent config files. Parameters are created with `pwndbg.config.add_param()` and are immediately available for use in the debugger with `set <name> <value>` and `show <name>`.
+
+## A complete example
+
+Here is a real parameter from `pwndbg/gdblib/events.py`:
+
+```python
+DISABLED = "disabled"
+DISABLED_DEADLOCK = "disabled-deadlock"
+ENABLED = "enabled"
+
+gdb_workaround_stop_event = config.add_param(
+    "gdb-workaround-stop-event",
+    DISABLED,
+    "asynchronous stop events to improve 'commands' functionality",
+    help_docstring=f"""
+Note that this may cause unexpected behavior with Pwndbg or gdb.execute.
+
+Values explained:
+
++ `{DISABLED}` - Disable the workaround (default).
++ `{DISABLED_DEADLOCK}` - Disable only deadlock detection; deadlocks may still occur.
++ `{ENABLED}` - Enable asynchronous stop events; gdb.execute may behave unexpectedly (asynchronously).
+    """,
+    param_class=pwndbg.lib.config.PARAM_ENUM,
+    enum_sequence=[DISABLED, DISABLED_DEADLOCK, ENABLED],
+)
+```
+
+## `config.add_param()` signature
+
+```python
+def add_param(
+    self,
+    name: str,
+    default: Any,
+    set_show_doc: str,
+    *,
+    help_docstring: str = "",
+    param_class: int | None = None,
+    enum_sequence: Sequence[str] | None = None,
+    scope: Scope = Scope.config,
+) -> Parameter:
+```
+
+### `name`
+
+The name used inside the debugger. Use kebab-case (e.g. `gdb-workaround-stop-event`). This is the string users type with `set` and `show`.
+
+### `default`
+
+The parameter's default value. Its type should match the `param_class`.
+
+### `set_show_doc`
+
+A brief description of what the parameter is for. This string appears in several places automatically:
+
+```text
+pwndbg> set gdb-workaround-stop-event enabled
+Set asynchronous stop events to improve 'commands' functionality to 'enabled'.
+```
+
+```text
+pwndbg> show gdb-workaround-stop-event
+Asynchronous stop events to improve 'commands' functionality is 'enabled'.
+```
+
+It also appears as the `Documentation` column in `config`:
+
+```text
+pwndbg> config
+Name                               Documentation                                                            Value (Default)
+----------------------------------------------------------------------------------------------------------------------------
+gdb-workaround-stop-event         asynchronous stop events to improve 'commands' functionality             'disabled'
+```
+
+Because GDB capitalizes and reframes this string in different contexts, follow these rules:
+- Start with a **lowercase** letter (unless the first word is a proper name or abbreviation)
+- Use a **noun phrase** rather than an action phrase where possible
+- No punctuation at the end
+- Keep it short — it must fit in the table column
+
+### `help_docstring`
+
+An optional but strongly recommended detailed explanation. It is shown with `help set <name>` in GDB and LLDB, and is rendered as markdown in the documentation. Plan the formatting accordingly — blank lines between list items matter.
+
+```text
+pwndbg> help set gdb-workaround-stop-event
+Set asynchronous stop events to improve 'commands' functionality.
+Note that this may cause unexpected behavior with Pwndbg or gdb.execute.
+
+Values explained:
+
++ `disabled` - Disable the workaround (default).
++ `disabled-deadlock` - Disable only deadlock detection; deadlocks may still occur.
++ `enabled` - Enable asynchronous stop events; gdb.execute may behave unexpectedly (asynchronously).
+
+Default: 'disabled'
+Valid values: 'disabled', 'disabled-deadlock', 'enabled'
+```
+
+The last two lines are generated automatically by pwndbg.
+
+## `param_class` types
+
+This argument tells GDB how to validate input. Use the most restrictive type that fits. The constants are defined in `pwndbg/lib/config.py`:
+
+| Constant | Python type | Description |
+|----------|-------------|-------------|
+| `PARAM_BOOLEAN` | `bool` | `True` or `False` |
+| `PARAM_AUTO_BOOLEAN` | `bool \| str` | `True`, `False`, or `"auto"` |
+| `PARAM_INTEGER` | `int` | Signed integer, disallows zero |
+| `PARAM_ZINTEGER` | `int` | Signed integer, allows zero |
+| `PARAM_UINTEGER` | `int` | Unsigned integer, disallows zero |
+| `PARAM_ZUINTEGER` | `int` | Unsigned integer, allows zero |
+| `PARAM_ZUINTEGER_UNLIMITED` | `int` | Unsigned integer or `"unlimited"` |
+| `PARAM_STRING` | `str` | Arbitrary string, accepts escape sequences |
+| `PARAM_ENUM` | `str` | One of a fixed set of values defined by `enum_sequence` |
+| `PARAM_OPTIONAL_FILENAME` | `str` | String corresponding to a filename |
+
+### `enum_sequence`
+
+Required when `param_class` is `PARAM_ENUM`. Provide a list of all legal values. GDB and pwndbg's LLDB driver reject any other value. The legal values are shown automatically at the end of `help_docstring`.
+
+If the enum values are not self-explanatory, describe them in `help_docstring` using the same format as the `gdb-workaround-stop-event` example above.
+
+## `scope`
+
+Groups parameters for display. The default scope is `config`.
+
+```python
+class Scope(Enum):
+    config = 1
+    theme  = 2
+    heap   = 3
+```
+
+| Scope | Display command | Export command |
+|-------|----------------|----------------|
+| `Scope.config` | `config` | `configfile` |
+| `Scope.theme` | `theme` | `themefile` |
+| `Scope.heap` | `heap-config` | *(none)* |
+
+### Theme parameters
+
+Never pass `scope=Scope.theme` directly to `add_param`. Use the wrapper functions in `pwndbg.color.theme` instead:
+
+```python
+# pwndbg/aglib/nearpc.py
+nearpc_branch_marker = pwndbg.color.theme.add_param(
+    "nearpc-branch-marker", "    ↓", "branch marker line for nearpc command"
+)
+```
+
+For parameters that control terminal colors, use `add_color_param`:
+
+```python
+# pwndbg/color/context.py
+config_highlight_color = theme.add_color_param(
+    "highlight-color", "green,bold", "color added to highlights like source/pc"
+)
+```
+
+## Using a parameter in code
+
+`add_param` returns a `Parameter` object. Assign the return value to a module-level variable to avoid repeating the full `pwndbg.config.<name>` path:
+
+```python
+# pwndbg/aglib/godbg.py
+line_width = pwndbg.config.add_param(
+    "go-dump-line-width", 80, "the soft line width for go-dump pretty printing"
+)
+```
+
+Because the variable is scoped to the file, it can have a short name. You can also access any registered parameter globally as `pwndbg.config.<name_with_underscores>` — dashes in the name become underscores:
+
+```python
+# These are equivalent:
+line_width.value         # via the returned variable
+pwndbg.config.go_dump_line_width.value  # via global registry
+```
+
+### Using color parameters
+
+`add_color_param` returns a `ColorParameter` object. Use its `.color_function()` method to apply the color to a string:
+
+```python
+# pwndbg/aglib/godbg.py
+def fmt_debug(self, val: str, default: str = "") -> str:
+    if self.debug:
+        return debug_color.color_function(val)
+    else:
+        return default
+```
+
+## Exporting config files
+
+Users can export all parameters from a scope to a file that pwndbg will source on startup:
+
+```text
+pwndbg> configfile ~/.pwndbg           # export config scope
+pwndbg> themefile ~/.pwndbg-theme      # export theme scope
+```
+
+Parameters set in those files override the defaults on every startup, so the format for `set_show_doc` and `help_docstring` is important — users see this text when reviewing their config files.

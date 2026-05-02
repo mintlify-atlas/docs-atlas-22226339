@@ -1,0 +1,510 @@
+---
+title: "WinDbg-compatible command aliases available in pwndbg"
+description: "Use familiar WinDbg command names in pwndbg: memory display and write by unit size, breakpoint management, backtrace, symbol lookup, and execution control."
+---
+
+pwndbg provides WinDbg-style command aliases so analysts who are accustomed to the Windows kernel debugger can work in GDB/LLDB without relearning command names. The memory display commands (`db`, `dw`, `dd`, `dq`) and write commands (`eb`, `ew`, `ed`, `eq`) cover all standard integer sizes, while breakpoint and execution commands map directly to their GDB equivalents.
+
+<Note>
+  Commands marked **GDB only** are unavailable under LLDB because they rely on GDB's Python or breakpoint APIs.
+</Note>
+
+## Quick reference
+
+### Memory display
+
+| Command | Unit | Default count | Description |
+| :--- | :--- | ---: | :--- |
+| `db addr [count]` | byte (1 B) | 64 | Dump N bytes |
+| `dw addr [count]` | word (2 B) | 32 | Dump N words |
+| `dd addr [count]` | dword (4 B) | 16 | Dump N dwords |
+| `dq addr [count]` | qword (8 B) | 8 | Dump N qwords |
+| `dc addr [count]` | byte (1 B) | 8 | Hexdump with ASCII sidebar |
+| `da addr [max]` | — | 256 | Dump ASCII string |
+| `ds addr [max]` | — | 256 | Dump string (auto-width) |
+| `dds addr` | pointer | — | Dump pointers with symbol annotations |
+| `dps addr` | pointer | — | Alias for `dds` |
+
+### Memory write
+
+| Command | Unit | Description |
+| :--- | :--- | :--- |
+| `eb addr [data ...]` | byte | Write hex bytes |
+| `ew addr [data ...]` | word | Write hex words |
+| `ed addr [data ...]` | dword | Write hex dwords |
+| `eq addr [data ...]` | qword | Write hex qwords |
+| `ez addr data` | string | Write a null-terminated string |
+| `eza addr data` | string | Alias for `ez` |
+
+---
+
+## Memory display commands
+
+### `db`
+
+Dumps bytes at the specified address, 16 bytes per line in classic WinDbg hex+ASCII layout.
+
+```bash
+db address [count]
+```
+
+<ParamField path="address" type="address">
+  Starting address to dump.
+</ParamField>
+
+<ParamField path="count" type="integer" optional>
+  Number of bytes to display (default: 64).
+</ParamField>
+
+**Example**
+
+```bash
+db $rsp
+db 0x7ffff7000000 128
+```
+
+---
+
+### `dw`
+
+Dumps 16-bit words at the specified address.
+
+```bash
+dw address [count]
+```
+
+<ParamField path="address" type="address">
+  Starting address to dump.
+</ParamField>
+
+<ParamField path="count" type="integer" optional>
+  Number of words to display (default: 32).
+</ParamField>
+
+---
+
+### `dd`
+
+Dumps 32-bit dwords at the specified address.
+
+```bash
+dd address [count]
+```
+
+<ParamField path="address" type="address">
+  Starting address to dump.
+</ParamField>
+
+<ParamField path="count" type="integer" optional>
+  Number of dwords to display (default: 16).
+</ParamField>
+
+---
+
+### `dq`
+
+Dumps 64-bit qwords at the specified address.
+
+```bash
+dq address [count]
+```
+
+<ParamField path="address" type="address">
+  Starting address to dump.
+</ParamField>
+
+<ParamField path="count" type="integer" optional>
+  Number of qwords to display (default: 8).
+</ParamField>
+
+---
+
+### `dc`
+
+Hexdumps memory at the specified address with an ASCII sidebar — identical to pwndbg's `hexdump` command.
+
+```bash
+dc address [count]
+```
+
+<ParamField path="address" type="address">
+  Starting address to hexdump.
+</ParamField>
+
+<ParamField path="count" type="integer" optional>
+  Number of bytes to dump (default: 8).
+</ParamField>
+
+---
+
+### `da`
+
+Dumps a null-terminated ASCII string at the specified address.
+
+```bash
+da address [max]
+```
+
+<ParamField path="address" type="address">
+  Address of the string.
+</ParamField>
+
+<ParamField path="max" type="integer" optional>
+  Maximum string length to read (default: 256).
+</ParamField>
+
+**Example**
+
+```bash
+da 0x402010
+```
+
+---
+
+### `ds`
+
+Dumps a string at the specified address. If the provided `max` is below 256, it is automatically raised to 256 to ensure a useful truncation threshold.
+
+```bash
+ds address [max]
+```
+
+<ParamField path="address" type="address">
+  Address of the string.
+</ParamField>
+
+<ParamField path="max" type="integer" optional>
+  Maximum string length (default: 256; raised to 256 if lower).
+</ParamField>
+
+---
+
+### `dds` / `dps`
+
+Dumps pointer-sized values at the specified address and resolves each to the nearest symbol. Equivalent to pwndbg's `telescope` command.
+
+**Aliases:** `kd`, `dps`, `dqs`
+
+```bash
+dds addr
+```
+
+<ParamField path="addr" type="address">
+  Starting address to dump.
+</ParamField>
+
+**Example**
+
+```bash
+dds $rsp
+```
+
+---
+
+## Memory write commands
+
+All write commands interpret their `data` arguments as hexadecimal values (with or without a `0x` prefix) unless stated otherwise. Values are written in the target's native byte order.
+
+### `eb`
+
+Writes one or more hex bytes to the specified address.
+
+```bash
+eb address [data ...]
+```
+
+<ParamField path="address" type="address">
+  Destination address.
+</ParamField>
+
+<ParamField path="data" type="string[]" optional>
+  Hex byte values to write (e.g. `90 90 90` or `0x90 0x90`).
+</ParamField>
+
+**Example**
+
+```bash
+# Patch three bytes to NOPs
+eb 0x401234 90 90 90
+```
+
+---
+
+### `ew`
+
+Writes one or more hex 16-bit words.
+
+```bash
+ew address [data ...]
+```
+
+---
+
+### `ed`
+
+Writes one or more hex 32-bit dwords.
+
+```bash
+ed address [data ...]
+```
+
+**Example**
+
+```bash
+ed 0x601040 deadbeef
+```
+
+---
+
+### `eq`
+
+Writes one or more hex 64-bit qwords.
+
+```bash
+eq address [data ...]
+```
+
+**Example**
+
+```bash
+eq $rsp 0x4141414141414141
+```
+
+---
+
+### `ez`
+
+Writes a null-terminated string to the specified address.
+
+```bash
+ez address data
+```
+
+<ParamField path="address" type="address">
+  Destination address.
+</ParamField>
+
+<ParamField path="data" type="string">
+  The string to write. A null terminator is appended automatically.
+</ParamField>
+
+**Example**
+
+```bash
+ez 0x404000 "hello"
+```
+
+---
+
+### `eza`
+
+Alias for `ez`. Writes a null-terminated ASCII string to the specified address.
+
+```bash
+eza address data
+```
+
+---
+
+## Breakpoints
+
+All breakpoint commands are **GDB only**.
+
+### `bp`
+
+<Note>GDB only</Note>
+
+Sets a breakpoint at the specified address. Equivalent to `break *<address>`.
+
+```bash
+bp address
+```
+
+<ParamField path="address" type="address">
+  Address to break at.
+</ParamField>
+
+**Example**
+
+```bash
+bp 0x401234
+bp main
+```
+
+---
+
+### `bl`
+
+<Note>GDB only</Note>
+
+Lists all current breakpoints. Equivalent to `info breakpoints`.
+
+```bash
+bl
+```
+
+---
+
+### `bc`
+
+<Note>GDB only</Note>
+
+Clears (deletes) the breakpoint with the given index. Omit the index to delete all breakpoints.
+
+```bash
+bc [which]
+```
+
+<ParamField path="which" type="string | integer" optional>
+  Index of the breakpoint to clear. Omit (or pass `*`) to clear all breakpoints.
+</ParamField>
+
+**Examples**
+
+```bash
+# Clear breakpoint number 2
+bc 2
+
+# Clear all breakpoints
+bc
+```
+
+---
+
+### `bd`
+
+<Note>GDB only</Note>
+
+Disables the breakpoint with the given index without deleting it. Omit the index to disable all breakpoints.
+
+```bash
+bd [which]
+```
+
+<ParamField path="which" type="string | integer" optional>
+  Index of the breakpoint to disable. Omit to disable all.
+</ParamField>
+
+---
+
+### `be`
+
+<Note>GDB only</Note>
+
+Re-enables a previously disabled breakpoint. Omit the index to enable all breakpoints.
+
+```bash
+be [which]
+```
+
+<ParamField path="which" type="string | integer" optional>
+  Index of the breakpoint to enable. Omit to enable all.
+</ParamField>
+
+---
+
+## Execution control
+
+### `go`
+
+<Note>GDB only</Note>
+
+WinDbg compatibility alias for GDB's `continue` command.
+
+```bash
+go
+```
+
+---
+
+## Navigation
+
+### `k`
+
+<Note>GDB only</Note>
+
+Prints a backtrace. Alias for GDB's `bt`.
+
+```bash
+k
+```
+
+---
+
+### `pc`
+
+Steps to the next `call` instruction. WinDbg compatibility alias for pwndbg's `nextcall` command.
+
+```bash
+pc
+```
+
+---
+
+### `ln`
+
+Lists the symbol(s) nearest to a given address. If no address is given, uses the current program counter.
+
+```bash
+ln [value]
+```
+
+<ParamField path="value" type="address" optional>
+  The address to resolve. Defaults to `$pc`.
+</ParamField>
+
+**Examples**
+
+```bash
+# Resolve the current PC
+ln
+
+# Resolve a specific address
+ln 0xffffffff81234567
+```
+
+---
+
+## Other
+
+### `peb`
+
+Prints a reminder that this is not a Windows environment. The Windows Process Environment Block (PEB) is not available on Linux/macOS targets.
+
+```bash
+peb
+```
+
+---
+
+## Example WinDbg-style session
+
+The following shows a brief session using WinDbg-style commands in pwndbg to inspect a crash:
+
+```bash
+# Set a breakpoint and run
+bp main
+go
+
+# When stopped: inspect the stack as qwords
+dq $rsp
+
+# Dump the string that rdi points to
+da $rdi
+
+# Write a NOP over an unwanted check
+eb 0x401234 90
+
+# List all breakpoints
+bl
+
+# Clear breakpoint 1 and continue
+bc 1
+go
+
+# After a second stop: backtrace
+k
+
+# Find what symbol is nearest to rip
+ln $rip
+```

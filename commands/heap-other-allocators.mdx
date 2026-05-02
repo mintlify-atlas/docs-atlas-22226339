@@ -1,0 +1,289 @@
+---
+title: "jemalloc and musl mallocng heap inspection commands"
+description: "Commands for inspecting jemalloc extents and musl mallocng slots, groups, and metas — plus references to kernel slab and buddy allocator commands."
+---
+
+Pwndbg supports heap inspection beyond glibc. Two userspace allocators — Facebook's `jemalloc` and musl libc's `mallocng` — each have a dedicated command that exposes the internals of their allocation model. Pwndbg does not auto-detect the active allocator at the moment; you select the appropriate command family based on what your target links against.
+
+For kernel heap debugging, the `slab` and `buddydump` commands cover the Linux SLUB allocator and the buddy allocator respectively. Those are documented in the [kernel debugging guide](/guides/kernel-debugging).
+
+---
+
+## Allocator selection
+
+| Allocator | Pwndbg command | Target environment |
+|---|---|---|
+| glibc ptmalloc2 | `heap`, `bins`, `vis`, … | Linux userspace (glibc) |
+| jemalloc | `jemalloc` | FreeBSD, Android, or any binary that links jemalloc |
+| musl mallocng | `mallocng` (alias: `ng`) | Linux userspace (musl libc) |
+| Linux SLUB | `slab` | Kernel debugging via QEMU |
+| Linux buddy | `buddydump` | Kernel debugging via QEMU |
+
+---
+
+## jemalloc
+
+The `jemalloc` command inspects the jemalloc allocator by walking its radix tree (`rtree`) to locate extents — jemalloc's coarse-grained memory regions.
+
+<Note>
+Jemalloc support in pwndbg was tested against jemalloc 5.3.0. Earlier versions are not supported.
+</Note>
+
+### `jemalloc heap`
+
+```text
+jemalloc heap [-h]
+```
+
+Prints information about every extent currently registered in jemalloc's radix tree. For each extent, the output includes:
+
+- The allocated address region
+- The extent metadata address
+- The extent size
+- Whether the extent holds small (slab) allocations
+- The allocation state
+
+```text
+jemalloc heap
+```
+
+---
+
+### `jemalloc extent-info`
+
+```text
+jemalloc extent-info [-h] [-v] addr
+```
+
+Prints detailed information for a single extent whose metadata lives at `addr`.
+
+| Flag | Description |
+|---|---|
+| `addr` | Address of the extent metadata struct |
+| `-v / --verbose` | Print all bitfield values in the extent header |
+
+```text
+jemalloc extent-info 0x7f8a40000000
+jemalloc extent-info --verbose 0x7f8a40000000
+```
+
+---
+
+### `jemalloc find-extent`
+
+```text
+jemalloc find-extent [-h] addr
+```
+
+Looks up which extent owns a given pointer by performing a hard lookup in the radix tree, then prints extent information for it. Use this to determine the allocation context for any pointer returned by `malloc` in a jemalloc-linked binary.
+
+| Flag | Description |
+|---|---|
+| `addr` | Address of an allocated memory location |
+
+```text
+jemalloc find-extent 0x7f8a40001234
+```
+
+---
+
+## musl mallocng
+
+The `mallocng` command (alias: `ng`) inspects musl libc's `mallocng` slab allocator. The allocation unit in mallocng is called a **slot** (equivalent to glibc's chunk). Slots are organized into **groups** (slabs), each holding uniformly sized slots. Each group has an associated **meta** struct stored separately in a **meta area** to harden the allocator against metadata corruption attacks.
+
+Run `mallocng explain` for a full in-debugger explanation of the data model including struct definitions and a layout diagram.
+
+### `mallocng explain`
+
+```text
+mallocng explain [-h]
+```
+
+Prints a detailed explanation of the mallocng allocator design: struct definitions for `group`, `meta`, `meta_area`, and `malloc_context`, the relationship diagram between these objects, and an explanation of in-band slot metadata including cyclic offsets, p headers, and footer reserved fields.
+
+```text
+mallocng explain
+```
+
+---
+
+### `mallocng dump`
+
+```text
+mallocng dump [-h] [-ma META_AREA]
+```
+
+Dumps the entire mallocng heap. For each meta area, lists its metas and the groups they point to, then enumerates every slot in each group with its allocation state. Slots are color-coded: allocated (blue), freed (red), available (gray).
+
+Because the output can be large, you may want to page it:
+
+```text
+mallocng dump | less -R
+mallocng dump --meta-area 0x7f3c00200000
+```
+
+The `[index]` values beside metas show position in the `ctx.freed_meta_head` doubly-linked list; slot indices reflect position within the owning group.
+
+| Flag | Description |
+|---|---|
+| `-ma / --meta-area` | Limit output to a single meta area at the given address |
+
+---
+
+### `mallocng vis`
+
+```text
+mallocng vis [-h] address [count]
+```
+
+Visualizes `count` consecutive slots in the group that contains `address`. Each slot is rendered line by line at pointer granularity, color-coded by allocation state, with in-band metadata fields highlighted (cyclic offset, p[-3] index and reserved fields, footer reserved).
+
+```text
+mallocng vis 0x7f3c001008a0
+mallocng vis 0x7f3c001008a0 5
+```
+
+| Flag | Description |
+|---|---|
+| `address` | Any address inside the target slot |
+| `count` | Number of consecutive slots to visualize (default: `ng-vis-count`) |
+
+Related configuration:
+
+| Parameter | Default | Description |
+|---|---|---|
+| `ng-vis-count` | `10` | Default slot count for `mallocng vis` |
+| `ng-search-on-fail` | `true` | Search the heap to recover meta/group for freed or corrupted slots |
+
+---
+
+### `mallocng find`
+
+```text
+mallocng find [-h] [-a] [-m] [-s] address
+```
+
+Finds the slot whose range `[start, start + stride)` contains `address` and prints slot information. With `--all`, also prints the owning group and meta.
+
+| Flag | Description |
+|---|---|
+| `address` | Address to search for |
+| `-a / --all` | Print meta and group data in addition to slot info |
+| `-m / --metadata` | Extend containment check to include in-band metadata: `[start - IB, end)` |
+| `-s / --shallow` | Return the largest containing slot without recursing into nested groups |
+
+```text
+mallocng find 0x7f3c001008a0
+mallocng find --all 0x7f3c001008a0
+```
+
+---
+
+### `mallocng ctx`
+
+```text
+mallocng ctx [-h] [address]
+```
+
+Prints the global `__malloc_context` (`ctx`) object. This struct holds the allocator's root state: the secret, active groups for each size class, meta area head and tail, the free meta list, and per-class usage counters.
+
+| Flag | Description |
+|---|---|
+| `address` | Use this address instead of the auto-detected `__malloc_context` |
+
+```text
+mallocng ctx
+```
+
+---
+
+### `mallocng metaarea`
+
+```text
+mallocng metaarea [-h] [-i INDEX] address
+alias: mallocng ma
+```
+
+Prints the `meta_area` struct at `address`: the check field (verified against `ctx.secret`), the linked list pointer, the slot count, and the start of the meta array.
+
+| Flag | Description |
+|---|---|
+| `address` | Address of the `meta_area` object |
+| `-i / --index` | Also print the address of the meta at this (0-indexed) position |
+
+```text
+mallocng metaarea 0x7f3c00200000
+mallocng ma 0x7f3c00200000 --index 3
+```
+
+---
+
+### `mallocng group`
+
+```text
+mallocng group [-h] [-i INDEX] address
+```
+
+Prints information about a `group` object at `address`, including its meta pointer, the active slot index, and the storage start address. Also prints the owning meta.
+
+| Flag | Description |
+|---|---|
+| `address` | Address of the group object |
+| `-i / --index` | Print the start address of the slot at this (0-indexed) position within the group |
+
+---
+
+### `mallocng meta`
+
+```text
+mallocng meta [-h] address
+```
+
+Given the address of a `meta` object, prints the associated group information followed by the meta's fields: `prev`/`next` pointers, the group pointer (`mem`), `avail_mask`, `freed_mask`, `last_idx`, `freeable`, `sizeclass`, and `maplen`. Also displays the slot status bitmap as a compact string.
+
+---
+
+### `mallocng slots`
+
+```text
+mallocng slots [-h] [-a] address
+```
+
+Dumps information about a slot given its **start address** (not including the `IB` in-band header).
+
+| Flag | Description |
+|---|---|
+| `address` | Start of the slot (excluding the `IB` bytes) |
+| `-a / --all` | Print meta and group data |
+
+---
+
+### `mallocng slotu`
+
+```text
+mallocng slotu [-h] [-a] address
+```
+
+Dumps information about a slot given its **user address** — the pointer returned to the caller by `malloc()`, referred to as `p` in the musl source. This is the more common form when you have a pointer from the application.
+
+| Flag | Description |
+|---|---|
+| `address` | User address (`p`) |
+| `-a / --all` | Print meta and group data |
+
+```text
+mallocng slotu 0x7f3c001008b0
+mallocng slotu --all 0x7f3c001008b0
+```
+
+---
+
+## Kernel heap commands
+
+For kernel targets debugged through QEMU, pwndbg provides commands for the Linux SLUB allocator and the buddy page allocator. These are covered in the [kernel debugging guide](/guides/kernel-debugging).
+
+| Command | Description |
+|---|---|
+| `slab` | Inspect SLUB allocator caches and objects |
+| `buddydump` | Dump buddy allocator free lists |
+| `kmem-trace` | Trace kernel memory allocations |

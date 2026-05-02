@@ -1,0 +1,213 @@
+---
+title: "Register inspection and manipulation commands in pwndbg"
+description: "Display CPU registers with pointer annotations, read x86-64 segment bases, decode ARM CPSR/xPSR status bits, and modify individual flags with setflag."
+---
+
+pwndbg enhances GDB's register output with colour-coded values, pointer chain annotations, and architecture-aware flag decoding. In addition to the general `regs` display, dedicated commands expose x86-64 segment base addresses and ARM condition flags — and `setflag` lets you flip individual bits in the flags register without computing the full bitfield yourself.
+
+## regs
+
+Prints all general-purpose registers, enhanced with pointer chain annotations and colour-coded memory region labels. You can pass specific register names to display only those.
+
+```text
+regs [register ...]
+```
+
+| Argument | Description |
+| --- | --- |
+| `register` | One or more register names (default: all registers) |
+
+```text
+pwndbg> regs
+ RAX  0x0
+ RBX  0x0
+ RCX  0x7ffff7ecbae2 (read+18) ◂— cmp rax, -0x1000 /* 'H=' */
+ RDX  0x7ffff7fad580 (_IO_2_1_stderr_) ◂— 0xfbad2887
+ RDI  0x1
+ RSI  0x55555555b2a0 ◂— 0x68732f6e69622f 'bin/sh'
+ R8   0x0
+...
+ RIP  0x401155 (main) ◂— push rbp
+ EFLAGS  0x246 [ PF ZF IF ]
+```
+
+```text
+pwndbg> regs rip rsp rbp
+ RIP  0x401155 (main) ◂— push rbp
+ RSP  0x7fffffffe3d0 —▸ 0x7fffffffe5b2 ◂— '/tmp/demo'
+ RBP  0x0
+```
+
+Register values that point into mapped memory are displayed as pointer chains. EFLAGS/CPSR/xPSR fields are decoded into individual named flags.
+
+---
+
+## fsbase
+
+Prints the FS segment base address. On Linux x86-64, FS base typically holds the address of the thread-local storage (TLS) block for the current thread, which is where `%fs:0` (the `pthread_self` pointer) lives.
+
+```text
+fsbase
+```
+
+<Note>
+`fsbase` is GDB-only. See also the convenience variable `$fsbase`.
+</Note>
+
+```text
+pwndbg> fsbase
+FS base: 0x7ffff7fad7c0
+
+pwndbg> p (pthread_t) $fsbase
+$1 = 140737353804736
+```
+
+---
+
+## gsbase
+
+Prints the GS segment base address. On Linux x86-64, GS base is used by the kernel to store per-CPU data structures; in userspace it is sometimes used for alternative TLS schemes.
+
+```text
+gsbase
+```
+
+<Note>
+`gsbase` is GDB-only. See also the convenience variable `$gsbase`.
+</Note>
+
+```text
+pwndbg> gsbase
+GS base: 0x0
+```
+
+---
+
+## cpsr
+
+Decodes and prints the ARM CPSR (Current Program Status Register) or its AArch64/Cortex-M equivalent `xPSR` / `PSTATE`. You can also pass a raw integer value to decode it offline without the running process.
+
+```text
+cpsr [cpsr_value]
+```
+
+**Aliases:** `xpsr`, `pstate`
+
+| Argument | Description |
+| --- | --- |
+| `cpsr_value` | Optional raw value to decode instead of reading the live register |
+
+**ARM32 CPSR flags:**
+
+| Bit | Name | Description |
+| --- | --- | --- |
+| 31 | N | Negative result |
+| 30 | Z | Zero result |
+| 29 | C | Carry |
+| 28 | V | Overflow |
+| 27 | Q | Cumulative saturation |
+| 5 | T | Thumb state |
+| 4–0 | M | Processor mode |
+
+**AArch64 PSTATE / Cortex-M xPSR flags:**
+
+| Bit | Name | Description |
+| --- | --- | --- |
+| 31 | N | Negative |
+| 30 | Z | Zero |
+| 29 | C | Carry |
+| 28 | V | Overflow |
+
+<Tabs>
+  <Tab title="ARM32">
+    ```text
+    pwndbg> cpsr
+    CPSR: 0x60000010 [ Z C ]
+    N=0 Z=1 C=1 V=0 Q=0 T=0 Mode=USR
+    ```
+  </Tab>
+  <Tab title="AArch64">
+    ```text
+    pwndbg> cpsr
+    PSTATE: 0x60000000 [ Z C ]
+    N=0 Z=1 C=1 V=0
+    ```
+  </Tab>
+  <Tab title="Offline decode">
+    ```text
+    pwndbg> cpsr 0x80000010
+    CPSR: 0x80000010 [ N ]
+    N=1 Z=0 C=0 V=0 Q=0 T=0 Mode=USR
+    ```
+  </Tab>
+</Tabs>
+
+---
+
+## setflag
+
+Sets a single bit in the CPU flags register to 0 or 1. This is much more convenient than computing the full bitfield and using `set $eflags = ...`.
+
+```text
+setflag flag value
+```
+
+**Alias:** `flag`
+
+| Argument | Description |
+| --- | --- |
+| `flag` | Flag name (architecture-dependent, see below) |
+| `value` | `0` or `1` |
+
+<Warning>
+Only flag names defined in pwndbg's register table for the current architecture are accepted. Passing an unknown flag name will produce an error.
+</Warning>
+
+**x86/x64 EFLAGS:**
+
+| Flag name | Bit | Description |
+| --- | --- | --- |
+| `CF` | 0 | Carry |
+| `PF` | 2 | Parity |
+| `AF` | 4 | Auxiliary carry |
+| `ZF` | 6 | Zero |
+| `SF` | 7 | Sign |
+| `TF` | 8 | Trap |
+| `IF` | 9 | Interrupt enable |
+| `DF` | 10 | Direction |
+| `OF` | 11 | Overflow |
+
+**ARM CPSR / xPSR:**
+
+| Flag name | Description |
+| --- | --- |
+| `N` | Negative |
+| `Z` | Zero |
+| `C` | Carry |
+| `V` | Overflow |
+
+<Tabs>
+  <Tab title="x86/x64">
+    ```text
+    pwndbg> setflag ZF 1
+    pwndbg> setflag CF 0
+    pwndbg> regs
+     EFLAGS  0x246 [ PF ZF IF ]
+    ```
+  </Tab>
+  <Tab title="ARM">
+    ```text
+    pwndbg> setflag Z 0
+    pwndbg> cpsr
+    CPSR: 0x20000010 [ C ]
+    ```
+  </Tab>
+</Tabs>
+
+To inspect the current flags register value before modifying it:
+
+```text
+pwndbg> info reg eflags        # x86/x64
+pwndbg> info reg cpsr          # ARM32
+pwndbg> info reg xpsr          # Cortex-M
+```

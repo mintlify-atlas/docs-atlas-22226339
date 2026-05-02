@@ -1,0 +1,140 @@
+---
+title: "Conditional breakpoints, relative offsets, and ignores"
+description: "Set breakpoints that trigger only when a branch is or isn't taken, break at a PIE-relative offset, or skip a breakpoint for a fixed number of hits."
+---
+
+These commands extend GDB's breakpoint system with use cases that come up frequently in exploit development and reverse engineering: stopping only when a conditional branch goes a specific direction, placing breakpoints in ASLR-randomized binaries using relative offsets, and skipping a breakpoint for a fixed number of hits before it activates.
+
+<Note>All commands on this page are GDB only.</Note>
+
+---
+
+## `break-if-taken`
+
+Sets a breakpoint on a branch instruction that fires only when the branch **is** taken. If the branch is not taken (the condition is false), execution continues normally without stopping.
+
+```bash
+break-if-taken branch
+```
+
+<ParamField path="branch" type="string">
+  The address or symbol of the branch instruction to monitor. Can be a hex address, a symbol name, or a GDB location expression.
+</ParamField>
+
+**Examples**
+
+```bash
+# Break at 0x401234 only when the branch at that address is taken
+break-if-taken 0x401234
+
+# Break at a symbolic branch location
+break-if-taken check_auth+15
+```
+
+<Tip>
+  Use this when you want to catch the "interesting" path through a conditional — for example, the path where a check passes and a privileged block is entered.
+</Tip>
+
+---
+
+## `break-if-not-taken`
+
+Sets a breakpoint on a branch instruction that fires only when the branch **is not** taken. Execution stops when the branch's condition is false and the program falls through.
+
+```bash
+break-if-not-taken branch
+```
+
+<ParamField path="branch" type="string">
+  The address or symbol of the branch instruction to monitor.
+</ParamField>
+
+**Examples**
+
+```bash
+# Break at 0x401234 only when the branch is NOT taken
+break-if-not-taken 0x401234
+
+# Stop when an authentication check fails (falls through instead of jumping)
+break-if-not-taken check_auth+15
+```
+
+<Tip>
+  Use this to catch error paths or failure conditions — for example, when a bounds check fails and falls through to a vulnerable code path.
+</Tip>
+
+---
+
+## `breakrva`
+
+Sets a breakpoint at a **relative virtual address (RVA)** from a module's base address. This is the right tool when working with PIE (position-independent executable) binaries, where absolute addresses change on every run due to ASLR.
+
+**Alias:** `brva`
+
+```bash
+breakrva [offset] [module]
+```
+
+<ParamField path="offset" type="integer" optional>
+  The RVA (offset from the module base) at which to place the breakpoint. Accepts decimal or hex values. Defaults to `0`.
+</ParamField>
+
+<ParamField path="module" type="string" optional>
+  The module to use as the base. Defaults to the currently loaded target executable. Specify a shared library name to break in a dependency.
+</ParamField>
+
+**How it works**
+
+When a PIE binary runs, the OS loads it at a randomized base address. The RVA is the fixed offset from that base as it appears in the binary file (the same offset you'd see in a disassembler like Ghidra or IDA). `breakrva` looks up the current load address of the module at runtime and sets `base + offset` as the breakpoint target.
+
+**Examples**
+
+<CodeGroup>
+
+```bash Break in the main executable
+# Set a breakpoint at RVA 0x1234 in the target binary
+brva 0x1234
+```
+
+```bash Break in a shared library
+# Set a breakpoint at offset 0x5678 in libc
+brva 0x5678 libc
+```
+
+</CodeGroup>
+
+<Warning>
+  The binary must already be loaded (i.e. you must have started or attached to a process) for `breakrva` to resolve the module base. Running it before the process starts will produce an error.
+</Warning>
+
+---
+
+## `ignore`
+
+Sets the ignore count for a breakpoint. While the ignore count is positive, the breakpoint is silently passed over each time it would fire. The debugger only stops when the count reaches zero.
+
+```bash
+ignore [N] COUNT
+```
+
+<ParamField path="N" type="integer" optional>
+  The breakpoint number to configure. If omitted, the most recently created breakpoint (highest breakpoint number) is used.
+</ParamField>
+
+<ParamField path="COUNT" type="integer">
+  The number of times to skip this breakpoint before it activates.
+</ParamField>
+
+**Examples**
+
+```bash
+# Skip breakpoint 3 the next 5 times it would fire
+ignore 3 5
+
+# Skip the last-created breakpoint 10 times
+ignore 10
+```
+
+<Tip>
+  This is useful when a breakpoint is inside a loop and you want to stop only on the Nth iteration — set `ignore` to `N - 1` so the debugger stops on hit number N.
+</Tip>

@@ -1,0 +1,142 @@
+---
+title: "Context display: registers, stack, and disassembly"
+description: "Every time the debugger stops, pwndbg prints a color-coded summary of registers, disassembly, the stack, and call frames — all in one glance."
+---
+
+Every time execution stops — at a breakpoint, after a single step, or on a signal — pwndbg automatically prints a context panel. It shows the current register values, a disassembly window around the program counter, a stack telescope, a call backtrace, and the arguments passed to the nearest function call. All memory addresses are color-coded by the region they belong to: stack, heap, code, libc, and so on, so you can orient yourself immediately.
+
+## Sections of the context
+
+The context is divided into named sections. The default set (in display order) is `last_signal`, `regs`, `disasm`, `code`, `ghidra`, `stack`, `backtrace`, `expressions`, `threads`, and `heap_tracker`. The `ghidra` section shows live decompilation when a decompiler is connected; it is silently omitted otherwise. An additional `args` section shows function arguments at call sites but is not in the default list. You can show or hide individual sections on the fly:
+
+```text
+context regs disasm stack
+context --off backtrace
+context --on backtrace
+context --all
+```
+
+The `context` command (alias: `ctx`) reprints the current context without stepping. This is useful after using `up` or `down` to navigate stack frames, or after writing a register value manually.
+
+### Registers
+
+The `regs` section lists every general-purpose and flag register. Changed registers since the last stop are highlighted, making it easy to see what a single instruction affected. Pointer registers that point into a known mapping are shown with the mapping name inline.
+
+### Stack
+
+The `stack` section uses `telescope` to recursively dereference pointer chains starting at the stack pointer. Each line shows an offset from `$sp`, the raw value, and a chain of dereferences until a non-pointer value or a symbol is reached. Registers that happen to point into the displayed range are annotated on their respective lines.
+
+### Disassembly window
+
+The `disasm` section displays annotated instructions around `$pc`. Operand values are resolved at the current register state, branch targets are shown, and the branch that will actually be taken (if any) is marked. When Unicorn emulation is available, instructions that have not yet executed are shown with their predicted effects already applied.
+
+### Backtrace
+
+The `backtrace` section lists the current call stack, showing frame numbers, return addresses, and symbol names where available.
+
+### Argument annotations
+
+Call sites in the disassembly are annotated with the arguments that will be passed to the called function. This works best with debug symbols but also handles the common case of calls through the PLT — pwndbg reads the GOT to resolve the real function and looks up its prototype.
+
+## Manually refreshing
+
+```text
+context
+ctx
+```
+
+## Context history
+
+pwndbg keeps a history of every context it has printed. Use `contextprev` / `contextprev <N>` (alias: `ctxp`) to scroll back through earlier stops, and `contextnext` / `contextnext <N>` (alias: `ctxn`) to move forward again. To jump to a specific point in history by content, use `contextsearch`:
+
+```text
+contextprev
+contextprev 3
+contextnext
+contextsearch mmap
+contextsearch mmap regs
+```
+
+`contextsearch <needle>` finds the most recent history entry whose output contains `needle`. An optional second argument restricts the search to a specific section.
+
+## Watch expressions
+
+`contextwatch` (aliases: `ctx-watch`, `cwatch`) adds an expression that is evaluated and shown in the `expressions` section on every context refresh. You can watch a C expression or run any GDB command:
+
+```text
+cwatch BUF
+cwatch ITEMS[0]
+cwatch execute "ds BUF"
+cwatch execute "x/20x $rsp"
+cwatch execute "info args"
+```
+
+Remove a watched expression by number with `contextunwatch` (alias: `cunwatch`):
+
+```text
+cunwatch 0
+```
+
+## Splitting context across multiple TTYs
+
+When working in a terminal multiplexer you can route each section to a different pane. Open a second pane, note its TTY path (e.g. `/dev/pts/2`), then redirect a section to it:
+
+```text
+contextoutput stack /dev/pts/2 true
+contextoutput regs /dev/pts/3 true
+```
+
+The third argument controls whether the target pane is cleared on each update. For a tmux setup you can automate pane creation and routing from a GDB script:
+
+```python
+python
+import atexit
+import os
+from pwndbg.commands.context import contextoutput
+
+bt = os.popen('tmux split-window -P -F "#{pane_id}:#{pane_tty}" -d "cat -"').read().strip().split(":")
+st = os.popen(f'tmux split-window -h -t {bt[0]} -P -F ' + '"#{pane_id}:#{pane_tty}" -d "cat -"').read().strip().split(":")
+re = os.popen(f'tmux split-window -h -t {st[0]} -P -F ' + '"#{pane_id}:#{pane_tty}" -d "cat -"').read().strip().split(":")
+di = os.popen('tmux split-window -h -P -F "#{pane_id}:#{pane_tty}" -d "cat -"').read().strip().split(":")
+panes = dict(backtrace=bt, stack=st, regs=re, disasm=di)
+for sec, p in panes.items():
+    contextoutput(sec, p[1], True)
+atexit.register(lambda: [os.popen(f"tmux kill-pane -t {p[0]}").read() for p in panes.values()])
+end
+```
+
+<Tip>
+The [splitmind](https://github.com/jerdna-regeiz/splitmind) and [pwnmux](https://github.com/joaogodinho/pwnmux) projects provide ready-made tmux layouts for pwndbg. For kitty users, [kittydbg](https://github.com/k4lizen/kittydbg) offers an equivalent.
+</Tip>
+
+## GDB TUI integration
+
+Each context section is also available as a native GDB TUI window named `pwndbg_<section>` (e.g. `pwndbg_regs`, `pwndbg_disasm`, `pwndbg_stack`). pwndbg ships two predefined layouts:
+
+```text
+layout pwndbg
+layout pwndbg_code
+```
+
+To create your own layout:
+
+```text
+tui new-layout my_layout {-horizontal { { -horizontal { pwndbg_code 1 pwndbg_disasm 1 } 2 { {-horizontal pwndbg_legend 8 pwndbg_control 2 } 0 pwndbg_regs 1 pwndbg_stack 1 } 3 } 7 cmd 3 } 3 { pwndbg_backtrace 2 pwndbg_expressions 2 pwndbg_threads 1 } 1 } 1 status 1
+layout my_layout
+```
+
+Use `focus cmd` to return keyboard focus to the command window after entering TUI mode. Press `Ctrl-x a` to toggle between TUI and CLI modes. Hold `Shift` to use the mouse for text selection rather than TUI navigation.
+
+## Color coding
+
+Memory addresses are colored by region type throughout all context sections:
+
+| Color | Region |
+|---|---|
+| Red | Stack |
+| Green | Heap |
+| Blue / cyan | Executable (code) |
+| Yellow | Writable data |
+| Magenta | Read-only data / libc |
+
+These colors are configurable via `theme` parameters — run `theme` to see all options.

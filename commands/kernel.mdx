@@ -1,0 +1,612 @@
+---
+title: "Linux kernel debugging commands for exploit research"
+description: "Inspect and navigate a live Linux kernel under QEMU: tasks, memory, modules, slab/buddy allocators, BPF/netfilter subsystems, and symbol lookup."
+---
+
+pwndbg ships a comprehensive set of commands for Linux kernel debugging. Most commands require a QEMU kernel debugging setup — attach GDB to QEMU's built-in GDB stub (`-s -S` flags or `-gdb tcp::1234`) with a matching `vmlinux` loaded for symbol information. A few commands (such as `msr`, `p2v`, `v2p`, and `pagewalk`) work in any environment where the relevant kernel structures are accessible.
+
+<Note>
+  Most kernel commands require QEMU kernel debugging with a `vmlinux` symbol file loaded. See the [kernel debugging guide](/guides/kernel-debugging) for prerequisites.
+</Note>
+
+## System information
+
+### `kbase`
+
+Finds the kernel virtual base address. With KASLR enabled, `kbase` can automatically rebase the loaded symbol file so all subsequent symbol lookups use the correct addresses.
+
+```bash
+kbase [-r] [-v]
+```
+
+<ParamField path="-r / --rebase" type="flag" optional>
+  Rebase the loaded symbol file to the discovered kernel base address.
+</ParamField>
+
+<ParamField path="-v / --verbose" type="flag" optional>
+  Show additional information, including the physical address.
+</ParamField>
+
+---
+
+### `kversion`
+
+Prints the kernel version string equivalent to `/proc/version`.
+
+```bash
+kversion
+```
+
+---
+
+### `kcmdline`
+
+Prints the kernel command line, equivalent to the contents of `/proc/cmdline`.
+
+```bash
+kcmdline
+```
+
+---
+
+### `kconfig`
+
+Reads and searches the kernel configuration. The configuration is extracted from the running kernel image (or from a previously loaded file). Without a `config_name` argument, the full configuration is printed.
+
+```bash
+kconfig [-l FILE] [config_name]
+```
+
+<ParamField path="config_name" type="string" optional>
+  Filter the output to lines containing this configuration option name (e.g. `CONFIG_SLAB`).
+</ParamField>
+
+<ParamField path="-l / --load FILE" type="string" optional>
+  Load the kernel configuration from a file instead of extracting it from the running kernel.
+</ParamField>
+
+**Examples**
+
+```bash
+# Print full kernel config
+kconfig
+
+# Search for KASLR-related options
+kconfig RANDOMIZE
+
+# Load config from an external file
+kconfig -l /boot/config-$(uname -r)
+```
+
+---
+
+### `kchecksec`
+
+Checks the running kernel for common hardening configuration options — the kernel equivalent of `checksec` for binaries. Reports whether options like `CONFIG_RANDOMIZE_BASE`, `CONFIG_STACKPROTECTOR`, `CONFIG_STRICT_KERNEL_RWX`, and others are enabled.
+
+```bash
+kchecksec
+```
+
+---
+
+## Tasks and processes
+
+### `ktask`
+
+Displays information about kernel tasks (processes). With no argument, lists all tasks on the system. Pass a task name substring to filter the results.
+
+```bash
+ktask [task_name]
+```
+
+<ParamField path="task_name" type="string" optional>
+  Substring to filter task names. Only tasks whose names contain this string are shown.
+</ParamField>
+
+**Examples**
+
+```bash
+# List all tasks
+ktask
+
+# List tasks matching "ssh"
+ktask ssh
+```
+
+---
+
+### `kcurrent`
+
+Displays the current task from the debugger's perspective. Optionally selects a different task by PID for use by `kfile`, `pagewalk`, and `vmmap`.
+
+```bash
+kcurrent [--set] [pid]
+```
+
+<ParamField path="pid" type="integer" optional>
+  PID of the task to display. If omitted, shows the task currently being debugged.
+</ParamField>
+
+<ParamField path="--set" type="flag" optional>
+  Set the selected task (used by `kfile`, `pagewalk`, `vmmap`) to the task with the given PID. This does not change the actual CPU context — it only affects how certain commands interpret task-specific data.
+</ParamField>
+
+**Examples**
+
+```bash
+# Show the current task
+kcurrent
+
+# Select PID 42 as the active task for kfile/pagewalk
+kcurrent --set 42
+```
+
+---
+
+### `kfile`
+
+Lists file descriptors accessible by a kernel task. Shows the file path or socket information for each open descriptor.
+
+```bash
+kfile [--fd FD] [pid]
+```
+
+<ParamField path="pid" type="integer" optional>
+  PID of the task. Defaults to the current task (see `kcurrent`).
+</ParamField>
+
+<ParamField path="--fd FD" type="integer" optional>
+  Display only the file descriptor with this number.
+</ParamField>
+
+---
+
+### `kmod`
+
+Lists loaded kernel modules. Optionally filters by a name substring and can load a module's symbol file into GDB.
+
+```bash
+kmod [-l PATH] [module_name]
+```
+
+<ParamField path="module_name" type="string" optional>
+  Substring to filter module names.
+</ParamField>
+
+<ParamField path="-l / --load PATH" type="string" optional>
+  Path to the module's `.ko` file. GDB will load symbols from it at the address where the module is mapped in memory.
+</ParamField>
+
+**Examples**
+
+```bash
+# List all loaded modules
+kmod
+
+# Filter to modules whose name contains "ext"
+kmod ext
+
+# Load symbols for a specific module
+kmod -l /lib/modules/$(uname -r)/kernel/fs/ext4/ext4.ko
+```
+
+---
+
+## Memory
+
+### `slab`
+
+Inspects the kernel SLUB allocator. The three subcommands let you list caches, dump detailed cache information, and find which cache owns a given address.
+
+```bash
+slab {list,info,contains} [options]
+```
+
+**`slab list`** — list SLUB caches, optionally filtered by name:
+
+```bash
+slab list [filter]
+```
+
+**`slab info`** — dump details about one or more caches:
+
+```bash
+slab info [-v] [-c CPU] [-n NODE] [-p] [-a] name [name ...]
+```
+
+<ParamField path="-v / --verbose" type="flag" optional>
+  Show additional detail for each cache.
+</ParamField>
+
+<ParamField path="-c / --cpu CPU" type="integer" optional>
+  Restrict output to the per-CPU list for a specific CPU.
+</ParamField>
+
+<ParamField path="-p / --partial" type="flag" optional>
+  Display partial lists.
+</ParamField>
+
+<ParamField path="-a / --active" type="flag" optional>
+  Display the active list.
+</ParamField>
+
+**`slab contains`** — find the slab cache that contains an address:
+
+```bash
+slab contains addr [addr ...]
+```
+
+**Examples**
+
+```bash
+# List all caches whose names contain "kmalloc"
+slab list kmalloc
+
+# Get detailed info about the task_struct cache
+slab info task_struct
+
+# Find which cache owns address 0xffff888100200000
+slab contains 0xffff888100200000
+```
+
+---
+
+### `buddydump`
+
+Displays metadata and free-lists for the buddy page allocator. Useful for inspecting page availability and for identifying page-level allocation artefacts during kernel exploitation.
+
+```bash
+buddydump [-z ZONE] [-o ORDER] [-m MTYPE] [-p] [-c CPU] [-n NODE] [-f FIND] [--MIGRATE_TYPES N]
+```
+
+<ParamField path="-z / --zone ZONE" type="string" optional>
+  Restrict output to the specified memory zone (e.g. `DMA`, `Normal`).
+</ParamField>
+
+<ParamField path="-o / --order ORDER" type="integer" optional>
+  Only show free-lists at this buddy order.
+</ParamField>
+
+<ParamField path="-m / --mtype MTYPE" type="string" optional>
+  Only show entries with the given migrate type.
+</ParamField>
+
+<ParamField path="-p / --pcp-only" type="flag" optional>
+  Show only per-CPU page (PCP) lists.
+</ParamField>
+
+<ParamField path="-f / --find FIND" type="address" optional>
+  Search for a specific page address in the free lists.
+</ParamField>
+
+---
+
+### `kmem-trace`
+
+Traces kernel SLUB and buddy memory allocations and frees across the next debugger step. The command executes `next` and prints all (de)allocations triggered by the current function. Only allocations from the current thread are reported unless `--all` is passed.
+
+```bash
+kmem-trace [-s] [-b] [-v] [-c COMMAND] [--all]
+```
+
+<ParamField path="-s / --trace-slab" type="flag" optional>
+  Trace only the SLUB allocator.
+</ParamField>
+
+<ParamField path="-b / --trace-buddy" type="flag" optional>
+  Trace only the buddy allocator.
+</ParamField>
+
+<ParamField path="-v / --verbose" type="flag" optional>
+  Print backtraces for each allocation or free.
+</ParamField>
+
+<ParamField path="-c / --command COMMAND" type="string" optional>
+  Execute this debugger command instead of `next` (e.g. `finish`, `continue`).
+</ParamField>
+
+<ParamField path="--all" type="flag" optional>
+  Include all allocations and frees system-wide, not just those from the current function. Useful when tracking RCU-deferred frees.
+</ParamField>
+
+**Examples**
+
+```bash
+# Trace all allocators across the next step
+kmem-trace
+
+# Trace only SLUB with backtraces
+kmem-trace -s -v
+
+# Trace across a function return
+kmem-trace -c finish
+```
+
+<Tip>
+  Call `kmem-trace` when the program counter sits on a `call` instruction to capture all allocations inside the callee.
+</Tip>
+
+---
+
+### `pagewalk`
+
+Walks the page tables for a virtual address, showing each level of the translation hierarchy (PGD → PUD → PMD → PTE) and the resulting physical address.
+
+```bash
+pagewalk [--pgd ENTRY] vaddr
+```
+
+<ParamField path="vaddr" type="address">
+  Virtual address to walk.
+</ParamField>
+
+<ParamField path="--pgd ENTRY" type="address" optional>
+  Override the page-global directory (PGD) entry to use. Defaults to the current task's PGD.
+</ParamField>
+
+**Example**
+
+```bash
+pagewalk 0xffffffff81000000
+```
+
+---
+
+### `p2v`
+
+Translates a physical address to its corresponding virtual address in the kernel's physmap.
+
+```bash
+p2v paddr
+```
+
+<ParamField path="paddr" type="address">
+  Physical address to translate.
+</ParamField>
+
+**Example**
+
+```bash
+p2v 0x1234000
+```
+
+---
+
+### `v2p`
+
+Translates a virtual address to its corresponding physical address via the physmap.
+
+```bash
+v2p vaddr
+```
+
+<ParamField path="vaddr" type="address">
+  Virtual address to translate.
+</ParamField>
+
+**Example**
+
+```bash
+v2p 0xffff888001234000
+```
+
+---
+
+### `pageinfo`
+
+Converts a pointer to a `struct page` to the corresponding virtual address, and prints page metadata.
+
+```bash
+pageinfo page
+```
+
+<ParamField path="page" type="address">
+  Address of the `struct page` to inspect.
+</ParamField>
+
+---
+
+### `msr`
+
+Reads or writes Model Specific Registers (MSRs) on x86/x86-64. This command works in both kernel and user-mode debugging sessions when running under QEMU.
+
+```bash
+msr [-w VALUE] [-l] [-r RANGE] [msr]
+```
+
+<ParamField path="msr" type="string | integer" optional>
+  MSR name (e.g. `IA32_EFER`) or numeric value (e.g. `0xC0000080`).
+</ParamField>
+
+<ParamField path="-w / --write VALUE" type="integer" optional>
+  Value to write into the MSR.
+</ParamField>
+
+<ParamField path="-l / --list" type="flag" optional>
+  List known MSRs for the current architecture.
+</ParamField>
+
+<ParamField path="-r / --range RANGE" type="string" optional>
+  Read a dash-separated inclusive range of MSR indices (e.g. `--range=1-10`).
+</ParamField>
+
+**Examples**
+
+```bash
+# List known MSRs
+msr -l
+
+# Read IA32_EFER
+msr 0xC0000080
+
+# Read MSRs 0 through 10
+msr -r 0-10
+```
+
+---
+
+## Subsystems
+
+### `kbpf`
+
+Prints information about loaded BPF programs and maps from the kernel's BPF subsystem.
+
+```bash
+kbpf [-v] [-b NTH] [-p] [-m]
+```
+
+<ParamField path="-v / --verbose" type="flag" optional>
+  Increase verbosity.
+</ParamField>
+
+<ParamField path="-b / --break NTH" type="integer" optional>
+  Set a breakpoint at the start of the Nth JIT-compiled eBPF program.
+</ParamField>
+
+<ParamField path="-p / --progs" type="flag" optional>
+  Print BPF programs only.
+</ParamField>
+
+<ParamField path="-m / --maps" type="flag" optional>
+  Print BPF maps only.
+</ParamField>
+
+**Examples**
+
+```bash
+# Show all BPF programs and maps
+kbpf
+
+# Break at the start of the second JIT-compiled program
+kbpf -b 2
+```
+
+---
+
+### `knft`
+
+Inspects the kernel netfilter (nftables) subsystem. Subcommands let you drill into specific parts of the nftables hierarchy.
+
+```bash
+knft {dump,list-tables,list-chains,list-rules,list-sets,list-objects,list-exprs,list-flowtables} [options]
+```
+
+All subcommands accept `-n NSID` to target a specific network namespace by ID.
+
+| Subcommand | Description |
+| :--- | :--- |
+| `dump [nsid]` | Dump all tables, chains, rules, and expressions |
+| `list-tables` | List netfilter tables |
+| `list-chains [family] [table]` | List chains in a table |
+| `list-rules [family] [table] [chain]` | List rules in a chain |
+| `list-sets [family] [table]` | List sets in a table |
+| `list-objects [family] [table]` | List stateful objects |
+| `list-exprs [family] [table] [chain] [rule_id]` | List expressions for a rule |
+| `list-flowtables [family] [table]` | List flowtables |
+
+Table families: `inet`, `ip`, `ip6`, `netdev`, `bridge`, `arp`.
+
+**Examples**
+
+```bash
+# Dump everything in the default namespace
+knft dump
+
+# List all tables
+knft list-tables
+
+# List rules in the inet/filter/input chain
+knft list-rules inet filter input
+```
+
+---
+
+### `kdmabuf`
+
+Prints information about DMA buffer (dma-buf) allocations in the kernel. Useful when debugging GPU or media drivers that share buffers across devices.
+
+```bash
+kdmabuf
+```
+
+---
+
+### `kdmesg`
+
+Prints the kernel ring buffer (dmesg) contents without leaving the debugger. Pass `-T` for human-readable timestamps.
+
+```bash
+kdmesg [-T]
+```
+
+<ParamField path="-T / --ctime" type="flag" optional>
+  Print human-readable timestamps instead of raw monotonic time.
+</ParamField>
+
+---
+
+### `binder`
+
+Displays Android Binder IPC information. Useful when debugging Android kernels.
+
+```bash
+binder
+```
+
+---
+
+## Symbol lookup
+
+### `klookup`
+
+Looks up kernel symbols by name or address. Aliases: `kallsyms`, `ks`.
+
+```bash
+klookup [-a] [symbol]
+```
+
+<ParamField path="symbol" type="string | address" optional>
+  Symbol name (substring match) or address to look up. With no argument, lists all available symbols.
+</ParamField>
+
+<ParamField path="-a / --apply" type="flag" optional>
+  Apply all matching symbols to the debugger session. Most useful for kernel modules: pass a substring of the module name to load its exported symbols. For full kernel symbolisation, use [vmlinux-to-elf](https://github.com/marin-m/vmlinux-to-elf) or a compiled `vmlinux`.
+</ParamField>
+
+**Examples**
+
+```bash
+# Look up symbols containing "commit_creds"
+klookup commit_creds
+
+# Apply symbols for the "xhci_hcd" module
+klookup -a xhci_hcd
+
+# Resolve an address to the nearest symbol
+klookup 0xffffffff81234567
+```
+
+---
+
+### `ksyscalls`
+
+Displays the kernel syscall table — the name and handler address for each syscall. Pass a name to filter.
+
+```bash
+ksyscalls [syscall_name]
+```
+
+<ParamField path="syscall_name" type="string" optional>
+  Syscall name substring to filter for. Matches are case-sensitive.
+</ParamField>
+
+**Examples**
+
+```bash
+# Print the full syscall table
+ksyscalls
+
+# Find the handler for execve
+ksyscalls execve
+```

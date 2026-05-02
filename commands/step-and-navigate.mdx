@@ -1,0 +1,266 @@
+---
+title: "Step, next, and fine-grained execution navigation commands"
+description: "Advance execution to the next call, jump, return, syscall, or matching instruction without placing manual breakpoints — ideal for reverse engineering."
+---
+
+These commands advance execution until a particular type of instruction is reached. They are especially useful during exploit development and reverse engineering when you want to skip over uninteresting code and stop exactly at a call, branch, return, or syscall — without manually placing and clearing breakpoints.
+
+## Quick reference
+
+| Command | Alias | Description |
+| :--- | :--- | :--- |
+| `nextcall` | — | Break at the next call instruction |
+| `nextjmp` | `nextjump` | Break at the next jump instruction |
+| `nextret` | — | Break at the next return-like instruction (no branches) |
+| `nextsyscall` | `nextsc` | Break at the next syscall, skipping branches |
+| `stepsyscall` | `stepsc` | Break at the next syscall, taking branches |
+| `nextproginstr` | — | Break at the next instruction in the main program |
+| `stepover` | `so` | Break at the instruction immediately after the current one |
+| `stepret` | — | Step through branches to reach the next return |
+| `stepuntilasm` | — | Break when a matching mnemonic/operand is seen |
+| `xuntil` | — | Continue to a specific address or expression (GDB only) |
+
+---
+
+## `nextcall`
+
+Breaks at the next `call` instruction. Optionally filters to only stop before a call whose target symbol matches a regular expression.
+
+```bash
+nextcall [symbol_regex]
+```
+
+<ParamField path="symbol_regex" type="string" optional>
+  A regex pattern matched against the name of the symbol being called. When provided, execution only stops if the call target's symbol matches.
+</ParamField>
+
+**Examples**
+
+```bash
+# Break at the very next call
+nextcall
+
+# Break only before a call to malloc (or any symbol matching "malloc")
+nextcall malloc
+
+# Break before any call to a function containing "alloc"
+nextcall alloc
+```
+
+---
+
+## `nextjmp`
+
+Breaks at the next jump (branch) instruction.
+
+**Alias:** `nextjump`
+
+```bash
+nextjmp
+```
+
+**Example**
+
+```bash
+nextjmp
+```
+
+---
+
+## `nextret`
+
+Breaks at the next return-like instruction without following branches. Execution passes over any calls or jumps encountered along the way.
+
+```bash
+nextret
+```
+
+**Example**
+
+```bash
+nextret
+```
+
+<Note>
+  Unlike `stepret`, this command does not follow branches. If the current function calls other functions before returning, those calls are skipped over.
+</Note>
+
+---
+
+## `nextsyscall`
+
+Breaks at the next syscall instruction, ignoring branches. Any calls or jumps along the path are not followed.
+
+**Alias:** `nextsc`
+
+```bash
+nextsyscall
+```
+
+**Example**
+
+```bash
+nextsyscall
+```
+
+---
+
+## `stepsyscall`
+
+Breaks at the next syscall instruction by taking branches — meaning it follows calls and jumps along the way. Optionally filters by syscall number or name, and by a register condition.
+
+**Alias:** `stepsc`
+
+```bash
+stepsyscall [-c CONDITION] [syscall]
+```
+
+<ParamField path="syscall" type="string" optional>
+  The syscall to wait for. Accepts a syscall number (decimal or hex) or a syscall name.
+</ParamField>
+
+<ParamField path="-c / --condition" type="string" optional>
+  An additional register condition that must be true when the syscall is hit, expressed as a GDB expression (e.g. `$rdi==1`).
+</ParamField>
+
+**Examples**
+
+```bash
+# Break at any next syscall, following branches
+stepsyscall
+
+# Break at the next write syscall
+stepsyscall write
+
+# Break at syscall number 1
+stepsyscall 1
+
+# Break at the next write syscall where fd == 1 (stdout)
+stepsyscall write -c '$rdi==1'
+
+# Break when any syscall is called and rax equals 60 (exit)
+stepsyscall -c '$rax==60'
+```
+
+---
+
+## `nextproginstr`
+
+Breaks at the next instruction that belongs to the main program — not to a shared library, the dynamic linker, or any other mapped region outside the program's own code.
+
+```bash
+nextproginstr
+```
+
+**Example**
+
+```bash
+nextproginstr
+```
+
+<Tip>
+  This is useful when you're inside a library call and want to quickly return to program code without knowing the exact return address.
+</Tip>
+
+---
+
+## `stepover`
+
+Sets a breakpoint at the instruction immediately after the current one, then continues. Unlike GDB's `next`, this works at the assembly level and always advances exactly one instruction — it does not "step over" calls in the source-level sense.
+
+**Alias:** `so`
+
+```bash
+stepover [addr]
+```
+
+<ParamField path="addr" type="integer" optional>
+  Address whose following instruction should be used as the breakpoint target. If omitted, uses the current program counter.
+</ParamField>
+
+**Examples**
+
+```bash
+# Break after the current instruction
+so
+
+# Break after the instruction at 0x401234
+stepover 0x401234
+```
+
+---
+
+## `stepret`
+
+Breaks at the next return-like instruction by stepping through branches — following every call and jump until a `ret` is reached. This ensures the path taken is the one the program would actually take.
+
+```bash
+stepret
+```
+
+**Example**
+
+```bash
+stepret
+```
+
+<Note>
+  `stepret` follows branches while `nextret` does not. Use `stepret` when you need to reach the return instruction that will actually be executed, not just the first one visible in a linear scan.
+</Note>
+
+---
+
+## `stepuntilasm`
+
+Breaks at the next instruction whose mnemonic (and optionally operands) match what you specify. Steps instruction by instruction until a match is found.
+
+```bash
+stepuntilasm mnemonic [op_str ...]
+```
+
+<ParamField path="mnemonic" type="string">
+  The instruction mnemonic to match (e.g. `call`, `mov`, `xor`).
+</ParamField>
+
+<ParamField path="op_str" type="string[]" optional>
+  One or more operand strings to match. When provided, both the mnemonic and the operands must match.
+</ParamField>
+
+**Examples**
+
+```bash
+# Break at the next call instruction
+stepuntilasm call
+
+# Break at the next "mov rax, 0"
+stepuntilasm mov rax, 0
+
+# Break at any xor instruction
+stepuntilasm xor
+```
+
+---
+
+## `xuntil`
+
+<Note>GDB only</Note>
+
+Continues execution until the program counter reaches a given address or until a GDB expression becomes true. Similar to GDB's built-in `until`, but accepts arbitrary expressions and symbolic targets.
+
+```bash
+xuntil target
+```
+
+<ParamField path="target" type="string">
+  An address, symbol name, or GDB expression specifying where to stop (e.g. `0x401234`, `main+42`, `func_name`).
+</ParamField>
+
+**Examples**
+
+```bash
+# Continue until a specific address
+xuntil 0x401234
+
+# Continue until a symbol
+xuntil main+42
+```

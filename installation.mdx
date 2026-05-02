@@ -1,0 +1,233 @@
+---
+title: "Installing pwndbg with GDB or LLDB on Linux and macOS"
+description: "Install pwndbg on Linux and macOS using the portable installer, Homebrew, Nix, official OS packages, or directly from source with uv."
+---
+
+pwndbg ships as a standalone binary that wraps GDB or LLDB, so you don't need to modify your existing debugger configuration. The quickest way to get started is the portable installer, which fetches the latest release from GitHub and sets up the `pwndbg` (GDB) or `pwndbg-lldb` (LLDB) command automatically. Alternatively, you can install via Homebrew, Nix, official OS packages, or build from source.
+
+<Tabs>
+  <Tab title="GDB">
+    ### Portable installer
+
+    The install script fetches and installs the portable release from [GitHub releases](https://github.com/pwndbg/pwndbg/releases) and makes the `pwndbg` command available system-wide or for the current user.
+
+    <Tabs>
+      <Tab title="System install">
+        Installs for all users. Requires root — the script will invoke `sudo`.
+
+        <CodeGroup>
+          ```bash curl
+          curl --proto '=https' --tlsv1.2 -LsSf 'https://install.pwndbg.re' | sh -s -- -t pwndbg-gdb
+          ```
+          ```bash GNU wget
+          wget --https-only --secure-protocol=TLSv1_2 -qO- 'https://install.pwndbg.re' | sh -s -- -t pwndbg-gdb
+          ```
+          ```bash BusyBox wget
+          wget -qO- 'https://install.pwndbg.re' | sh -s -- -t pwndbg-gdb
+          ```
+        </CodeGroup>
+      </Tab>
+      <Tab title="User install">
+        Installs for the current user only. No root access required.
+
+        <CodeGroup>
+          ```bash curl
+          curl --proto '=https' --tlsv1.2 -LsSf 'https://install.pwndbg.re' | sh -s -- -t pwndbg-gdb -u
+          ```
+          ```bash GNU wget
+          wget --https-only --secure-protocol=TLSv1_2 -qO- 'https://install.pwndbg.re' | sh -s -- -t pwndbg-gdb -u
+          ```
+          ```bash BusyBox wget
+          wget -qO- 'https://install.pwndbg.re' | sh -s -- -t pwndbg-gdb -u
+          ```
+        </CodeGroup>
+      </Tab>
+    </Tabs>
+
+    ### Homebrew (macOS)
+
+    ```bash
+    brew install pwndbg/tap/pwndbg-gdb
+    ```
+
+    ### Nix
+
+    ```bash
+    nix shell github:pwndbg/pwndbg
+    ```
+
+    ### Official packages
+
+    You can download a package directly from the [releases page](https://github.com/pwndbg/pwndbg/releases) and install it through your package manager. Use the second table on the releases page to find the right download for your system.
+
+    <CodeGroup>
+      ```bash RPM (CentOS / Alma / Rocky / RHEL)
+      dnf install ./pwndbg-2026.02.18.x86_64.rpm
+      ```
+      ```bash DEB (Debian / Ubuntu / Kali)
+      apt install ./pwndbg_2026.02.18_amd64.deb
+      ```
+      ```bash Alpine
+      apk add --allow-untrusted ./pwndbg_2026.02.18_x86_64.apk
+      ```
+      ```bash Arch Linux
+      pacman -U ./pwndbg-2026.02.18-1-x86_64.pkg.tar.zst
+      ```
+    </CodeGroup>
+
+    ### Distro packages
+
+    <Warning>
+      Distro packages are **not officially supported**. pwndbg cannot control the versions of Python dependencies in this case. Use a different installation method when reproducing bug reports. If a bug reproduces with a distro package but not with a supported method, report it to the package maintainer.
+    </Warning>
+
+    <CodeGroup>
+      ```bash Arch
+      sudo pacman -S pwndbg
+      ```
+      ```bash Gentoo
+      sudo emerge --ask dev-debug/pwndbg
+      ```
+    </CodeGroup>
+
+    After installing via a distro package, both the `pwndbg` and `pwndbg-lldb` commands will be available.
+  </Tab>
+
+  <Tab title="LLDB">
+    <Note>
+      The LLDB implementation in pwndbg is early-stage and may contain bugs or limitations. Known issues are tracked on [GitHub](https://github.com/pwndbg/pwndbg/issues?q=is%3Aissue+state%3Aopen+label%3A%22LLDB+Port%22).
+    </Note>
+
+    ### Portable installer
+
+    <Tabs>
+      <Tab title="System install">
+        ```bash
+        curl --proto '=https' --tlsv1.2 -LsSf 'https://install.pwndbg.re' | sh -s -- -t pwndbg-lldb
+        ```
+      </Tab>
+      <Tab title="User install">
+        ```bash
+        curl --proto '=https' --tlsv1.2 -LsSf 'https://install.pwndbg.re' | sh -s -- -t pwndbg-lldb -u
+        ```
+      </Tab>
+    </Tabs>
+
+    ### Homebrew (macOS)
+
+    ```bash
+    brew install pwndbg/tap/pwndbg-lldb
+    ```
+
+    ### Nix
+
+    ```bash
+    nix shell github:pwndbg/pwndbg#pwndbg-lldb
+    ```
+  </Tab>
+</Tabs>
+
+## Manually installing the portable version
+
+If you prefer to download and manage the archive yourself, grab a release from the [pwndbg releases page](https://github.com/pwndbg/pwndbg/releases). There are separate releases for GDB and LLDB. Use the first table to select the right architecture, then:
+
+<Steps>
+  <Step title="Extract the archive">
+    ```bash
+    tar -v -xf <archive-name>
+    ```
+  </Step>
+  <Step title="Run pwndbg">
+    ```bash
+    ./pwndbg/bin/pwndbg
+    ```
+
+    Or for LLDB:
+
+    ```bash
+    ./pwndbg/bin/pwndbg-lldb
+    ```
+  </Step>
+  <Step title="Add to PATH (optional)">
+    Add the `./pwndbg/bin/` directory to your shell's `PATH` to use `pwndbg` from anywhere.
+  </Step>
+</Steps>
+
+### Removing quarantine flags on macOS
+
+<Tip>
+  Run this command immediately after extracting the archive on macOS to avoid being prompted to approve each file individually.
+</Tip>
+
+macOS Gatekeeper will try to block each file in the extracted archive from running until you approve it. To remove the quarantine flag from all files at once (assuming the archive was extracted to a folder named `pwndbg`):
+
+```bash
+xattr -rd com.apple.quarantine pwndbg
+```
+
+## Installing from source
+
+Installing from source requires [uv](https://docs.astral.sh/uv/getting-started/installation/#standalone-installer), git, and curl.
+
+<Steps>
+  <Step title="Install uv">
+    ```bash
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    source $HOME/.local/bin/env
+    ```
+  </Step>
+  <Step title="Install pwndbg">
+    This installs both the `pwndbg` (GDB) and `pwndbg-lldb` (LLDB) binaries:
+
+    ```bash
+    uv tool install git+https://github.com/pwndbg/pwndbg[gdb,lldb]
+    ```
+
+    To update pwndbg later, re-run the same command.
+  </Step>
+</Steps>
+
+### Using your system GDB or LLDB
+
+If you want pwndbg to use the GDB or LLDB from your system package manager rather than pwndbg's bundled version:
+
+```bash
+# Assumes your LLDB and GDB are compiled with the same Python version
+PY_VER=$(gdb -nx --batch -iex 'py import sysconfig; print(sysconfig.get_config_var("VERSION"))')
+uv tool install --python=$PY_VER git+https://github.com/pwndbg/pwndbg
+```
+
+### Classic gdbinit setup
+
+If you prefer the traditional setup where you run the `gdb` binary directly and pwndbg is sourced from `~/.gdbinit`:
+
+```bash
+PY_VER=$(gdb -nx --batch -iex 'py import sysconfig; print(sysconfig.get_config_var("VERSION"))')
+uv tool install --python=$PY_VER git+https://github.com/pwndbg/pwndbg
+echo "source $(uv tool dir)/pwndbg/share/pwndbg/gdbinit.py" >> ~/.gdbinit
+```
+
+### Clone and build
+
+Cloning the repository produces the same result as the classic gdbinit setup above:
+
+```bash
+git clone https://github.com/pwndbg/pwndbg
+cd pwndbg
+./setup.sh
+```
+
+To update, run `git pull`.
+
+<Note>
+  For development setup instructions (editable installs, running tests, linting), see the [contributing guide](/contributing/overview).
+</Note>
+
+## Compatibility
+
+| Setup | Supported versions | Notes |
+|---|---|---|
+| pwndbg + GDB | Python 3.10+, GDB 12.1+ | Battle-tested on Ubuntu 22.04/24.04 |
+| pwndbg + LLDB | Python 3.12+, LLDB 19+ | Experimental/early-stage |
+| QEMU user-mode | QEMU 8.1+ | vFile API required for `vmmap` |
+| QEMU system | QEMU 6.2+ | Supported since Ubuntu 22.04 |

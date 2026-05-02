@@ -1,0 +1,138 @@
+---
+title: "Stack inspection and security analysis commands in pwndbg"
+description: "Dereference stack slots with pointer chains, view full stack frames, detect stack canaries, find return addresses, and explore stacks across all threads."
+---
+
+pwndbg's stack commands build on the `telescope` engine to dereference each stack slot as a pointer chain and annotate every address with its containing memory region. This makes it straightforward to spot saved return addresses, heap pointers, and string arguments without manually computing offsets from `$sp`.
+
+## stack
+
+Dereferences `count` pointer-sized slots on the stack starting at `$sp + offset * ptrsize`.
+
+```text
+stack [count] [offset]
+```
+
+| Argument | Default | Description |
+| --- | --- | --- |
+| `count` | 8 | Number of slots to display |
+| `offset` | 0 | Element offset from `$sp` (supports negative values) |
+
+| Flag | Description |
+| --- | --- |
+| `-f` / `--frame` | Show the entire frame from `rsp` to `rbp` |
+| `-i` / `--inverse` | Display in reverse stack-growth order |
+
+```text
+pwndbg> stack
+00:0000│ rsp  0x7fffffffe3d0 ◂— 0x1
+01:0008│      0x7fffffffe3d8 —▸ 0x7fffffffe5b2 ◂— '/tmp/demo'
+02:0010│      0x7fffffffe3e0 ◂— 0x0
+03:0018│      0x7fffffffe3e8 ◂— 0x0
+04:0020│      0x7fffffffe3f0 —▸ 0x7fffffffe5bc ◂— 'TERM=xterm-256color'
+...
+```
+
+```text
+pwndbg> stack 4 -2
+fe:fff0│      0x7fffffffe3b0 ◂— 0x0
+ff:fff8│      0x7fffffffe3b8 ◂— 0x0
+00:0000│ rsp  0x7fffffffe3c0 ◂— 0x1
+01:0008│      0x7fffffffe3c8 —▸ 0x7fffffffe5b2 ◂— '/tmp/demo'
+```
+
+---
+
+## stackf
+
+Like `stack`, but always shows the entire stack frame from `$rsp` to `$rbp`, plus one slot past `$rbp` for the saved return address. `count` and `offset` still apply.
+
+```text
+stackf [count] [offset]
+```
+
+| Argument | Default | Description |
+| --- | --- | --- |
+| `count` | 8 | Minimum number of slots to display |
+| `offset` | 0 | Element offset from `$sp` |
+
+```text
+pwndbg> stackf
+00:0000│ rsp  0x7fffffffe3a0 —▸ 0x7ffff7de7000 (__libc_start_main) ◂— ...
+01:0008│      0x7fffffffe3a8 ◂— 0x0
+02:0010│      0x7fffffffe3b0 ◂— 0x1
+03:0018│ rbp  0x7fffffffe3b8 ◂— 0x0
+04:0020│      0x7fffffffe3c0 —▸ 0x401185 (main+48) ◂— pop rbp   ← return address
+```
+
+<Tip>
+`stackf` is a shortcut for `stack -f`. Both ultimately display the same frame view; `stackf` simply makes the intent explicit.
+</Tip>
+
+---
+
+## canary
+
+Prints the current stack canary value for the running thread. With `-a`, prints canaries for every thread.
+
+```text
+canary [-a]
+```
+
+| Flag | Description |
+| --- | --- |
+| `-a` / `--all` | Print canaries for all threads |
+
+```text
+pwndbg> canary
+AT_RANDOM = 0x7fffffffe4c9 # address
+Canary    = 0x63b845ea24dd0200 (may be incorrect if not using default GCC canary)
+Found valid canaries on the stacks:
+00:0000│  0x7fffffffe398 ◂— 0x63b845ea24dd0200
+```
+
+<Note>
+The canary value is read from the `AT_RANDOM` auxiliary vector entry. If your program uses a non-standard canary implementation, the reported value may not match what is actually on the stack.
+</Note>
+
+---
+
+## retaddr
+
+Scans the stack for saved return addresses and prints each one, annotated with the symbol name when available.
+
+```text
+retaddr
+```
+
+```text
+pwndbg> retaddr
+  0x7fffffffe3c8 —▸ 0x401185 (main+48)
+  0x7fffffffe408 —▸ 0x7ffff7de70b3 (__libc_start_main+243)
+  0x7fffffffe438 —▸ 0x0
+```
+
+This is particularly useful for detecting return-address overwrites during exploit development: run `retaddr` before and after a buffer overflow to see which saved addresses have been corrupted.
+
+---
+
+## stack-explore
+
+Iterates over every thread and dumps its stack using `telescope`. This gives a quick overview of what each thread is doing without switching thread context manually.
+
+```text
+stack-explore
+```
+
+```text
+pwndbg> stack-explore
+Thread 1 "demo" (LWP 12345):
+00:0000│ rsp  0x7fffffffe3d0 ◂— 0x1
+01:0008│      0x7fffffffe3d8 —▸ 0x7fffffffe5b2 ◂— '/tmp/demo'
+...
+
+Thread 2 "worker" (LWP 12346):
+00:0000│ rsp  0x7ffff7ff9f00 ◂— 0x0
+01:0008│      0x7ffff7ff9f08 —▸ 0x7ffff7bc3a40 (start_thread+64)
+...
+```

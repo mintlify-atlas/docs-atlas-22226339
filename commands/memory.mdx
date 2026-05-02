@@ -1,0 +1,494 @@
+---
+title: "Memory inspection and manipulation commands in pwndbg"
+description: "Inspect and modify process memory with telescope, vmmap, search, hexdump, leakfind, mmap, mprotect, xor, and Go runtime value inspection commands."
+---
+
+pwndbg extends GDB's raw memory commands with a rich suite of tools designed for exploit development and reverse engineering. You can recursively dereference pointer chains, display the full virtual memory map, search for byte sequences or values across all mappings, and directly call `mmap`/`mprotect` inside the inferior process without writing any code.
+
+## telescope
+
+Recursively dereferences pointers starting at the given address and prints each step in the chain. Defaults to `$sp` with 8 lines.
+
+```text
+telescope [address] [count]
+```
+
+| Argument | Default | Description |
+| --- | --- | --- |
+| `address` | `$sp` | Start address |
+| `count` | 8 | Number of lines |
+
+| Flag | Description |
+| --- | --- |
+| `-r` / `--reverse` | Show `count` addresses before the given address instead of after |
+| `-f` / `--frame` | Show the entire stack frame from `rsp` to `rbp` |
+| `-i` / `--inverse` | Print in reverse stack-growth order |
+
+<Tip>
+Passing a single small integer (e.g. `telescope 20`) is interpreted as a line count and telescopes from `$sp`.
+</Tip>
+
+```text
+pwndbg> telescope $rsp 16
+00:0000│ rsp  0x7fffffffe3d0 ◂— 0x1
+01:0008│      0x7fffffffe3d8 —▸ 0x7fffffffe5b2 ◂— '/tmp/demo'
+02:0010│      0x7fffffffe3e0 ◂— 0x0
+...
+```
+
+```text
+pwndbg> telescope -f
+00:0000│ rsp  0x7fffffffe3d0 —▸ 0x7ffff7a0d0d0 (__libc_start_main+240) ◂— ...
+01:0008│      0x7fffffffe3d8 ◂— 0x0
+02:0010│ rbp  0x7fffffffe3e0 ◂— 0x1
+03:0018│      0x7fffffffe3e8 —▸ 0x7ffff7a0d0d0  (return address)
+```
+
+Repeating identical values are collapsed into a single `... ↓ N skipped` line. Control this with the `telescope-skip-repeating-val` config option.
+
+---
+
+## vmmap
+
+Prints the virtual memory map in a format similar to `/proc/self/maps`. Filter by address or module name substring.
+
+```text
+vmmap [filter]
+```
+
+**Aliases:** `lm`, `address`, `vprot`, `libs`
+
+| Flag | Description |
+| --- | --- |
+| `-w` / `--writable` | Show writable mappings only |
+| `-x` / `--executable` | Show executable mappings only |
+| `-A N` / `--lines-after N` | Include N pages after the matched page (default: 1) |
+| `-B N` / `--lines-before N` | Include N pages before the matched page (default: 1) |
+| `-C N` / `--context N` | Include N pages on both sides of the matched page |
+| `--gaps` | Show unmapped gap information between regions |
+
+```text
+pwndbg> vmmap
+LEGEND: STACK | HEAP | CODE | DATA | RWX | RODATA
+    0x400000     0x401000 r--p     1000 0      /tmp/demo
+    0x401000     0x402000 r-xp     1000 1000   /tmp/demo
+    0x402000     0x403000 r--p     1000 2000   /tmp/demo
+    0x403000     0x404000 r--p     1000 2000   /tmp/demo
+    0x404000     0x405000 rw-p     1000 3000   /tmp/demo
+```
+
+```text
+pwndbg> vmmap libc
+    0x7ffff7dc2000     0x7ffff7de7000 r--p    25000 0       /lib/x86_64-linux-gnu/libc.so.6
+►   0x7ffff7de7000     0x7ffff7f6f000 r-xp   188000 25000   /lib/x86_64-linux-gnu/libc.so.6
+```
+
+```text
+pwndbg> vmmap --gaps
+LEGEND: MAPPED | GUARD | GAP
+...
+```
+
+<Note>
+For QEMU user targets, vmmap accuracy depends on QEMU version. Use `help vmmap` inside pwndbg for known limitations and workarounds.
+</Note>
+
+### vmmap-add
+
+Manually registers a memory region. Useful during bare-metal debugging when the kernel cannot supply mappings.
+
+```text
+vmmap-add start size [flags] [offset]
+```
+
+| Argument | Description |
+| --- | --- |
+| `start` | Starting virtual address |
+| `size` | Size in bytes |
+| `flags` | Permission flags: `r`, `w`, `x` in any combination (default: empty) |
+| `offset` | Offset into a backing ELF file (default: 0) |
+
+```text
+pwndbg> vmmap-add 0x20000000 0x1000 rwx
+Page('0x20000000-0x20001000 rwxp 0x0 ') added
+```
+
+### vmmap-explore
+
+Probes a single address and attempts to determine its page permissions by reading and writing, then registers the discovered page.
+
+```text
+vmmap-explore address
+```
+
+### vmmap-clear
+
+Removes all manually added entries from `vmmap-add` and `vmmap-explore` and resets vmmap caches.
+
+```text
+vmmap-clear
+```
+
+### vmmap-load
+
+Loads virtual memory map entries from a local ELF file, using its section flags to infer permissions. Defaults to the currently loaded file.
+
+```text
+vmmap-load [filename]
+```
+
+---
+
+## search
+
+Searches all mapped memory (or a specified mapping) for byte sequences, strings, integers, pointer-width values, or assembly instructions.
+
+```text
+search [-t type] [flags] value [mapping_name]
+```
+
+| Argument | Description |
+| --- | --- |
+| `value` | Pattern to search for |
+| `mapping_name` | Limit search to a specific mapping (e.g. `libc`, `[stack]`) |
+
+**Type selection** — choose one:
+
+| Flag | Description |
+| --- | --- |
+| `-t bytes` | Raw byte sequence (default) |
+| `-t string` | Null-terminated string |
+| `-t pointer` | Pointer-width integer (adapts to arch) |
+| `-1` / `--byte` | 1-byte integer |
+| `-2` / `--word` / `--short` | 2-byte integer |
+| `-4` / `--dword` | 4-byte integer |
+| `-8` / `--qword` | 8-byte integer |
+| `--asm` | Assembly instruction (assembled before searching) |
+
+**Filter flags:**
+
+| Flag | Description |
+| --- | --- |
+| `-x` / `--hex` | Treat `value` as hex-encoded bytes |
+| `-e` / `--executable` | Search executable segments only |
+| `-w` / `--writable` | Search writable segments only |
+| `-a N` / `--aligned N` | Results must be aligned to N bytes |
+| `-s N` / `--step N` | After each hit, advance to the next N-byte boundary |
+| `-l N` / `--limit N` | Stop after N results (does not save the rest) |
+| `--trunc-out` | Save all results but print only the first 20 |
+| `--save` | Save results for a follow-up `--next` search |
+| `--no-save` | Explicitly disable saving |
+| `-n` / `--next` | Search only within the saved result set |
+
+```text
+pwndbg> search -t string "Enter password"
+[stack]         0x7fffffffe410 "Enter password: "
+
+pwndbg> search -8 0xdeadbeefcafe1337
+[heap]          0x55555576a1a0 ◂— 0xdeadbeefcafe1337
+
+pwndbg> search --asm "jmp rax" libc
+libc-2.35.so    0x7ffff7e12340 <some_func+48>  jmp rax
+```
+
+---
+
+## hexdump
+
+Displays memory as a classic hex+ASCII dump.
+
+```text
+hexdump [address] [count]
+```
+
+| Argument | Default | Description |
+| --- | --- | --- |
+| `address` | `$sp` | Address or module name |
+| `count` | 64 | Bytes to dump |
+| `-C py` / `-C c` | — | Output as Python or C byte-array literal |
+
+```text
+pwndbg> hexdump $rip 32
++0000 0x401155  55 48 89 e5 48 83 ec 10  48 8d 05 a8 0e 00 00 48  │UH..H...H......H│
++0010 0x401165  89 45 f8 48 8d 3d 30 0e  00 00 e8 c6 fe ff ff 90  │.E.H.=0.........│
+```
+
+```text
+pwndbg> hexdump $rsp 16 -C py
+buf = (
+    b"\x01\x00\x00\x00\x00\x00\x00\x00"
+    b"\xb2\xe5\xff\xff\xff\x7f\x00\x00"
+)
+```
+
+---
+
+## xinfo
+
+Shows the offset of an address relative to nearby landmarks: the page start, a symbol, the heap base, the stack base, and so on.
+
+```text
+xinfo [address]
+```
+
+| Argument | Default | Description |
+| --- | --- | --- |
+| `address` | `$pc` | Address to inspect |
+
+```text
+pwndbg> xinfo $rip
+Extended information for virtual address 0x401155:
+  Containing mapping: 0x401000-0x402000 r-xp /tmp/demo
+  Offset into mapping: +0x155
+  Symbol: main
+```
+
+---
+
+## distance
+
+Prints the distance between two addresses. If only one address is given, prints the offset from the start of its containing page.
+
+```text
+distance addr1 [addr2]
+```
+
+```text
+pwndbg> distance 0x404000 0x404080
+0x404000->0x404080 is 0x80 bytes (0x10 words)
+
+pwndbg> distance $rip
+0x401155 is 0x155 bytes into the page at 0x401000
+```
+
+---
+
+## leakfind
+
+Starting from a given address, scans nearby memory and follows pointer chains to find addresses that fall within a named mapping — useful for locating ASLR leaks.
+
+```text
+leakfind [address] [-p page_name] [-o max_offset] [-d max_depth] [-s step]
+```
+
+| Argument | Default | Description |
+| --- | --- | --- |
+| `address` | `$sp` | Starting address |
+| `-p` / `--page_name` | — | Substring of the target mapping name |
+| `-o` / `--max_offset` | 72 | Maximum offset from a known pointer to check |
+| `-d` / `--max_depth` | 4 | Maximum chain length to follow |
+| `-s` / `--step` | 1 | Address stride when scanning |
+| `--negative_offset` | 0 | Maximum negative offset to check before each address |
+
+```text
+pwndbg> leakfind $rsp --page_name=libc --max_offset=0x48 --max_depth=6
+[stack] 0x7fffffffe3d0 -> [heap] 0x55555576a010 -> [libc] 0x7ffff7dc2345
+```
+
+---
+
+## probeleak
+
+Scans `count` bytes starting at `address` and reports any values that look like valid pointers, showing the distance from a page boundary.
+
+```text
+probeleak [address] [count] [--max-distance N] [--point-to mapping] [--flags flags] [--max-ptrs N]
+```
+
+| Argument | Default | Description |
+| --- | --- | --- |
+| `address` | `$sp` | Base address to scan |
+| `count` | 64 | Bytes to scan |
+| `--max-distance N` | 0 | Allow pointers up to N bytes past a page boundary |
+| `--point-to mapping` | — | Only report pointers into this mapping |
+| `--flags flags` | — | Require the target page to have these flags (e.g. `rwx`) |
+| `--max-ptrs N` | 0 (unlimited) | Stop after N results |
+
+```text
+pwndbg> probeleak $rsp 0x64
+0x7fffffffe3d8: 0x7ffff7de7000 -> libc (+0x0)
+
+pwndbg> probeleak $rsp 0x64 --point-to libc --flags rwx --max-ptrs 1
+0x7fffffffe3e0: 0x7ffff7f22000 -> libc rwxp (+0x0)
+```
+
+---
+
+## mmap
+
+Calls `mmap(2)` inside the inferior and prints the returned address. Useful for allocating executable shellcode buffers without modifying existing mappings.
+
+```text
+mmap addr length [prot] [flags] [fd] [offset]
+```
+
+| Argument | Default | Description |
+| --- | --- | --- |
+| `addr` | — | Address hint passed to mmap |
+| `length` | — | Mapping length in bytes |
+| `prot` | `7` (RWX) | `PROT_READ\|PROT_WRITE\|PROT_EXEC` or integer |
+| `flags` | `0x22` (PRIVATE\|ANON) | `MAP_PRIVATE\|MAP_ANONYMOUS` or integer |
+| `fd` | `-1` | File descriptor for file-backed mappings |
+| `offset` | `0` | Byte offset into the file |
+
+```text
+pwndbg> mmap 0x0 4096 PROT_READ|PROT_WRITE|PROT_EXEC MAP_PRIVATE|MAP_ANONYMOUS -1 0
+mmap returned: 0x7ffff7ff6000
+
+pwndbg> mmap 0xdeadbeef 0x1000
+mmap returned: 0x7ffff7ff5000
+```
+
+<Warning>
+`mmap` executes a live syscall in the inferior process. An unexpected return value (check with `errno`) indicates a failed mapping.
+</Warning>
+
+---
+
+## mprotect
+
+Calls `mprotect(2)` inside the inferior to change page permissions.
+
+```text
+mprotect addr length prot
+```
+
+| Argument | Description |
+| --- | --- |
+| `addr` | Page-aligned address |
+| `length` | Must be a multiple of the page size |
+| `prot` | Permission string (`PROT_READ\|PROT_EXEC`, `rx`, or integer `5`) |
+
+```text
+pwndbg> mprotect $rsp 4096 PROT_READ|PROT_WRITE|PROT_EXEC
+pwndbg> mprotect $rsp 4096 rwx
+pwndbg> mprotect some_symbol 0x1000 PROT_NONE
+```
+
+---
+
+## xor
+
+XORs `count` bytes at `address` with the given `key`. The key is applied byte-by-byte, cycling if necessary.
+
+```text
+xor address key count
+```
+
+```text
+pwndbg> xor 0x404000 0x41 16
+```
+
+---
+
+## memfrob
+
+XORs each byte in a region with `'*'` (0x2a). This is the libc `memfrob(3)` operation.
+
+```text
+memfrob address count
+```
+
+```text
+pwndbg> memfrob 0x404000 64
+```
+
+---
+
+## p2p
+
+Searches one or more mappings for pointer-to-pointer chains: it looks for pointers in the first mapping that point into the second, and so on. A single mapping name searches for any pointer within that mapping.
+
+```text
+p2p mapping_name [mapping_name ...]
+```
+
+```text
+pwndbg> p2p stack libc
+[stack] 0x7fffffffe3d8 -> [libc] 0x7ffff7de7000
+
+pwndbg> p2p heap
+[heap]  0x55555576a010 -> [heap] 0x55555576a080
+```
+
+---
+
+## dump-register-frame
+
+Decodes a register save area written to memory by an exception handler, such as the ARM Cortex-M exception frame. Pass `-p` to include the address of each field.
+
+```text
+dump-register-frame {armcm-exception|armcm-exception2} [address] [-p]
+```
+
+```text
+pwndbg> dump-register-frame armcm-exception 0x20001fd0
+r0  = 0x00000001
+r1  = 0x00000002
+...
+pc  = 0x08000234
+xpsr = 0x21000000
+```
+
+---
+
+## gdt
+
+Decodes x86-64 GDT (Global Descriptor Table) entries at the given base address. The base address is typically read from the GDTR register with the `sgdt` instruction.
+
+```text
+gdt address [count]
+```
+
+| Argument | Default | Description |
+| --- | --- | --- |
+| `address` | — | GDTR base address (bits 16–79 of the `sgdt` result) |
+| `count` | 8 | Number of entries to decode (`(GDTR.size + 1) / 8`) |
+
+<Note>
+In 64-bit mode the Base and Limit fields are ignored; each descriptor covers the entire linear address space regardless of their values.
+</Note>
+
+---
+
+## go-dump
+
+Dumps a Go runtime value of a specified type at a given address. The type can be a Go type literal or the address of a runtime type descriptor.
+
+```text
+go-dump type address [-x] [-f decimals] [-d] [-p]
+```
+
+**Alias:** `god`
+
+| Flag | Description |
+| --- | --- |
+| `-x` / `--hex` | Display non-pointer integers in hexadecimal |
+| `-f N` / `--decimals N` | Number of decimal places for floats |
+| `-d` / `--debug` | Show addresses for slice/map elements, slice capacity |
+| `-p` / `--pretty` | Enable pretty-printing |
+
+```text
+pwndbg> go-dump map[int]string 0x55555576c000
+map[int]string{
+  1: "hello",
+  2: "world",
+}
+```
+
+---
+
+## go-type
+
+Dumps the Go runtime reflection type descriptor stored at a given address. Useful when you have a `*_type` pointer and want to inspect the underlying Go type metadata.
+
+```text
+go-type address
+```
+
+**Alias:** `goty`
+
+```text
+pwndbg> go-type 0x408860
+go-type: map[int]string (kind: 21)
+```

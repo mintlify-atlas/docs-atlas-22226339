@@ -1,0 +1,185 @@
+---
+title: "Contributing to pwndbg: codebase, setup, and workflow"
+description: "Learn how pwndbg is structured, how to set up a development environment, and what every contributor needs to know before opening a pull request."
+---
+
+pwndbg welcomes contributions — bug fixes, new commands, tests, and documentation improvements. Before you open a pull request, read this page to understand the codebase architecture, the import rules that keep it healthy, and the required steps for linting and testing. You do not need to be assigned to an issue to submit a PR; just open one and it will be reviewed.
+
+## Architecture overview
+
+pwndbg is split into four main layers, each with a strictly defined role. Understanding where code lives — and where it must not go — is the most important thing to internalize before contributing.
+
+```text
+pwndbg/commands/     -> User-facing commands (NOT an API, don't import!)
+    ↓ (can import from)
+pwndbg/aglib/        -> Debugger-agnostic library (complex operations)
+    ↓ (can import from)
+pwndbg/dbg_mod/      -> Debugger abstraction layer (provides pwndbg.dbg)
+    |                   ├── gdb/  (GDB implementations)
+    |                   └── lldb/ (LLDB implementations)
+    ↓ (can import from)
+pwndbg/lib/          -> Generic utilities, NO debugger dependencies
+                        (lib can ONLY import from lib)
+```
+
+### What each layer does
+
+- **`pwndbg/commands/`** — Implements every user-visible command. Each file registers one or more commands using the `@pwndbg.commands.Command` decorator and calls into `aglib` for the actual work. Never import a commands file from anywhere else.
+- **`pwndbg/aglib/`** — Debugger-agnostic library. Contains complex features like heap analysis, vmmap, disassembly, and ELF parsing — things too broad for a single command but shared across many. Use this instead of the legacy `pwndbg/gdblib/`.
+- **`pwndbg/dbg_mod/`** — The debugger abstraction layer. Defines the interfaces for primitives like memory reads, symbol lookup, register access, and breakpoints. Has separate GDB and LLDB implementations. Think of it as a debugger-agnostic replacement for the `gdb` and `lldb` Python modules.
+- **`pwndbg/lib/`** — Pure Python utilities with no debugger or debugger-state dependencies. Things like `cache.py`, `tempfile.py`, and `zig.py` live here.
+
+## Import rules
+
+These rules prevent import cycles and keep the architecture coherent. The CI enforces them.
+
+<Warning>
+Violating these rules is the most common mistake new contributors make. Read them carefully.
+</Warning>
+
+| Rule | Reason |
+|------|--------|
+| `pwndbg/lib/` only imports `pwndbg/lib/` | `lib` must be usable anywhere, at any time, with no debugger state |
+| `pwndbg/dbg_mod/` never imports `aglib` | `aglib` depends on `dbg_mod`, not the other way around |
+| `pwndbg/dbg_mod/__init__.py` never imports debugger-specific code | Breaks the abstraction boundary |
+| Never import `commands/` from other modules | Commands are not an API; refactor shared logic into `aglib/` instead |
+| Never `from pwndbg.aglib import arch` or `from pwndbg.aglib import regs` | These objects are runtime-swapped; always access via `pwndbg.aglib.arch.whatever()` and `pwndbg.aglib.regs.whatever()` |
+| Import at the top of the file | Function-level imports are an omen that refactoring is needed |
+
+## Setting up for development
+
+<Steps>
+  <Step title="Install pwndbg from source">
+    Run the setup script to install pwndbg and configure it in your `~/.gdbinit`:
+
+    ```bash
+    ./setup.sh
+    ```
+
+    pwndbg officially supports Ubuntu 22.04 and later. GDB 12.1+ and, for LLDB support, LLDB 19+ are required.
+  </Step>
+  <Step title="Set up the dev environment">
+    Install development dependencies and configure the pre-push lint hook:
+
+    ```bash
+    ./setup-dev.sh
+    ```
+
+    This sets up a virtualenv, installs `ruff`, `mypy`, `vermin`, and other tools, and installs a git pre-push hook that runs the linter automatically.
+  </Step>
+  <Step title="Verify GDB and LLDB both work">
+    A full dev environment requires both GDB and LLDB. Some tooling (like `./scripts/generate-docs.sh`) requires both debuggers to be available.
+
+    To run pwndbg with LLDB:
+
+    ```bash
+    uv run pwndbg-lldb [binary-to-debug]
+    ```
+  </Step>
+</Steps>
+
+## Linting
+
+The `lint.sh` script runs `ruff`, `shfmt`, and `vermin`. Run it before pushing:
+
+```bash
+./lint.sh          # Run all checks
+./lint.sh -f       # Auto-fix formatting, then run all checks
+./lint.sh -fo      # Auto-fix formatting only (faster, skips vermin and mypy)
+```
+
+The CI job in `.github/workflows/lint.yml` runs `./lint.sh` on every pull request. Your PR must not increase the number of `mypy --strict` errors compared to the `dev` branch. Use a type checker in your editor — `mypy --strict`, `pyright`, or `ty` all work.
+
+<Note>
+Configuration for `ruff`, `vermin`, and `mypy` is in `pyproject.toml`. The `lint.sh` script also calls `scripts/custom-lint.py` for project-specific checks.
+</Note>
+
+## Running tests
+
+Your PR will not be merged without passing CI tests. Always write a new test or update an existing one when adding functionality. See the [writing tests](/contributing/writing-tests) page for how to do that.
+
+To run tests in the same Docker environment as CI:
+
+```bash
+# General (x86_64) userspace tests
+docker compose run --rm ubuntu24.04-mount ./tests.sh -d gdb -g gdb
+
+# Dual-debugger tests (GDB and LLDB)
+docker compose run --rm ubuntu24.04-mount ./tests.sh -d gdb -g dbg
+docker compose run --rm ubuntu24.04-mount ./tests.sh -d lldb -g dbg
+
+# Cross-architecture tests
+docker compose run --rm ubuntu24.04-mount ./tests.sh -d gdb -g cross-arch-user
+
+# Kernel tests
+docker compose run --rm ubuntu24.04-mount ./kernel-tests.sh
+
+# Unit tests (no debugger)
+docker compose run --rm ubuntu24.04-mount ./unit-tests.sh
+```
+
+Remove the `-mount` suffix to run from a clean slate without mounted files.
+
+To filter to specific tests, pass a regex after the group flag:
+
+```bash
+./tests.sh -d gdb -g dbg test_config    # Only tests matching "test_config"
+./tests.sh -d gdb -g dbg heap           # Only heap-related tests
+```
+
+## Updating auto-generated documentation
+
+The `docs/commands/`, `docs/functions/`, and `docs/configuration/` directories are auto-generated from source code. After any user-facing change — command descriptions, config values, convenience function signatures — run:
+
+```bash
+./scripts/generate-docs.sh
+```
+
+This requires both GDB and LLDB to be installed. Commit the generated changes in a separate commit. If you forget, the CI will detect the discrepancy using `./scripts/verify-docs.sh` and block the merge.
+
+## Key patterns
+
+These patterns come up constantly when implementing commands.
+
+```python
+# Get the current process
+inf = pwndbg.dbg.selected_inferior()
+
+# Read memory
+data = pwndbg.aglib.memory.read(address, size)
+val  = pwndbg.aglib.memory.u64(address)
+
+# Write memory
+pwndbg.aglib.memory.write(address, data_bytes)
+
+# Read registers (arch-specific)
+sp = pwndbg.aglib.regs.read_reg("rsp")
+
+# Read registers (arch-agnostic)
+sp = pwndbg.aglib.regs.read_reg(pwndbg.aglib.regs.stack)
+sp = pwndbg.aglib.regs.sp   # shorthand, works for "sp" and "pc"
+
+# Process info
+pid = pwndbg.aglib.proc.pid()
+```
+
+<Note>
+Never access `gdb` or `lldb` modules directly from commands or `aglib`. All debugger access goes through `pwndbg.dbg` and `pwndbg.aglib`.
+</Note>
+
+## Other contributing pages
+
+<CardGroup cols={2}>
+  <Card title="Add a new command" icon="terminal" href="/contributing/adding-a-command">
+    Create a command file, wire up argparse, use the right decorators, and register the command.
+  </Card>
+  <Card title="Add a configuration parameter" icon="sliders" href="/contributing/adding-a-parameter">
+    Add typed, scoped configuration options that appear in `config`, `theme`, or `heap-config`.
+  </Card>
+  <Card title="Write tests" icon="flask-conical" href="/contributing/writing-tests">
+    Write dual-debugger tests that run under both GDB and LLDB using the `@pwndbg_test` pattern.
+  </Card>
+  <Card title="pwndbg on GitHub" icon="github" href="https://github.com/pwndbg/pwndbg">
+    Browse the source, open issues, and submit pull requests.
+  </Card>
+</CardGroup>

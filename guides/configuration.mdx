@@ -1,0 +1,143 @@
+---
+title: "Configuring pwndbg: settings, themes, and config files"
+description: "Use the config, theme, and heap-config commands to view and change pwndbg settings, and generate .gdbinit snippets to persist your configuration."
+---
+
+Pwndbg exposes hundreds of tunable parameters organized into three scopes: general behavior (`config`), visual appearance (`theme`), and heap-specific settings (`heap-config`). You can inspect all parameters from within the debugger, change them at runtime, and generate `.gdbinit` snippets to make your settings permanent.
+
+## Viewing parameters
+
+**`config [filter]`** — Shows all pwndbg configuration parameters with their current values and defaults. Pass an optional filter string to narrow results by parameter name or description.
+
+```text
+pwndbg> config
+pwndbg> config context
+pwndbg> config emulate
+```
+
+**`theme [filter]`** — Shows all theme and color parameters. These control colors for registers, memory regions, banners, disassembly markers, hexdump output, and more.
+
+```text
+pwndbg> theme
+pwndbg> theme banner
+pwndbg> theme memory
+```
+
+**`heap-config [filter]`** — Shows heap-specific configuration parameters, including settings for heuristic resolution, libc symbol addresses, and allocator behavior.
+
+```text
+pwndbg> heap-config
+pwndbg> heap-config resolve
+```
+
+## Setting parameters
+
+Use `set <param-name> <value>` to change any pwndbg parameter at runtime. The change takes effect immediately and persists for the current session.
+
+```text
+set context-sections regs disasm code backtrace expressions
+set emulate jumps-only
+set dereference-limit 3
+set syntax-highlight-style native
+set banner-color green
+```
+
+To read the current value of a single parameter, use `show`:
+
+```text
+show context-sections
+show emulate
+```
+
+## Key configuration categories
+
+### Context display
+
+`context-sections` controls which panels appear in the context output and their order. The default value is:
+
+```text
+last_signal regs disasm code ghidra stack backtrace expressions threads heap_tracker
+```
+
+To show only registers and disassembly (useful for embedded targets or when the output is noisy):
+
+```text
+set context-sections regs disasm
+```
+
+Other context-related parameters:
+
+| Parameter | Default | Description |
+| --- | --- | --- |
+| `context-disasm-lines` | 10 | Additional lines in the disasm panel |
+| `context-stack-lines` | 8 | Lines in the stack panel |
+| `context-backtrace-lines` | 8 | Lines in the backtrace panel |
+| `context-code-lines` | 14 | Source code lines shown |
+| `context-max-threads` | 4 | Maximum threads in the threads panel |
+| `context-clear-screen` | off | Clear screen before each context print |
+| `context-output` | stdout | Redirect context to a file or TTY |
+
+### Emulation
+
+`emulate` controls Unicorn-based emulation used to resolve branch targets and annotate register values in the disassembly view:
+
+- `on` — Full emulation for registers and memory values (default)
+- `jumps-only` — Emulate only to resolve branch instructions
+- `off` — Disable emulation entirely
+
+Disabling emulation can significantly improve performance on slow targets or large binaries.
+
+### Display
+
+| Parameter | Default | Description |
+| --- | --- | --- |
+| `dereference-limit` | 5 | Max pointer dereferences in a chain |
+| `syntax-highlight` | on | Syntax highlighting for source and assembly |
+| `syntax-highlight-style` | monokai | Pygments style name |
+| `show-flags` | off | Show CPU flags register |
+| `show-compact-regs` | off | Compact multi-column register view |
+| `left-pad-disasm` | on | Left-pad disassembly output |
+
+### Heap
+
+`resolve-heap-via-heuristic` controls how pwndbg finds heap structures when debug symbols are unavailable:
+
+- `auto` — Use heuristics if symbols are missing (default)
+- `force` — Always use heuristics
+- `never` — Never use heuristics
+
+## Saving configuration permanently
+
+**`configfile`** (GDB only) — Generates a `.gdbinit` snippet containing all parameters you have changed from their defaults. Copy the output and paste it into your `~/.gdbinit` after the line that sources pwndbg.
+
+```text
+pwndbg> configfile
+```
+
+With `--show-all`, it outputs every parameter regardless of whether it has been changed:
+
+```text
+pwndbg> configfile --show-all
+```
+
+**`themefile`** (GDB only) — Same as `configfile` but for theme parameters.
+
+```text
+pwndbg> themefile
+```
+
+The generated output uses `set <param> <value>` lines, so you can paste it directly into `.gdbinit`:
+
+```text
+# context-sections: which context sections are displayed (controls order)
+# default: last_signal regs disasm code ghidra stack backtrace expressions threads heap_tracker
+set context-sections regs disasm code backtrace expressions
+
+# emulate: Unicorn emulation of code from the current PC register
+# default: on
+set emulate jumps-only
+```
+
+<Note>
+`configfile` and `themefile` are GDB-only commands. In LLDB, set parameters manually in your initialization file.
+</Note>

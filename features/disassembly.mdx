@@ -1,0 +1,91 @@
+---
+title: "Disassembly and emulation with Capstone and Unicorn"
+description: "pwndbg uses Capstone to decode instructions and Unicorn to emulate ahead, resolving operand values and predicting branch outcomes before they execute."
+---
+
+pwndbg uses the [Capstone](https://github.com/capstone-engine/capstone) disassembly engine combined with its own register and memory introspection to annotate every instruction with live values. When [Unicorn](https://github.com/unicorn-engine/unicorn) is available, it emulates instructions forward from the current `$pc` so that operands and branch outcomes are shown even for instructions that have not yet executed. This makes stepping through jump tables, PLT stubs, and ROP chains much easier.
+
+## nearpc — disassemble near the program counter
+
+`nearpc` (aliases: `pdisass`, `u`) disassembles a window of instructions around an address, defaulting to `$pc`:
+
+```text
+nearpc
+nearpc 20
+nearpc $pc 30
+nearpc --reverse 10
+nearpc --total 20
+nearpc --function
+nearpc --function main
+nearpc --no-branch
+```
+
+By default pwndbg shows 5 lines before `$pc` and 10 lines after. `--reverse N` overrides how many lines appear before the address. `--total N` keeps the total window fixed while dynamically adjusting the forward count based on cached instructions.
+
+`--function` disassembles the entire function containing `$pc`, or the function at a given address or symbol name.
+
+`--no-branch` disables the branch-target visualization arrows that appear next to conditional and unconditional jumps.
+
+To enable Unicorn emulation for a single `nearpc` call:
+
+```text
+nearpc --emulate
+```
+
+## emulate — Unicorn-backed disassembly
+
+`emulate` is like `nearpc` but always uses Unicorn to emulate instructions forward from `$pc`, resolving operand values without actually executing them:
+
+```text
+emulate
+emulate 20
+emulate --reverse 5
+emulate --total 30
+```
+
+When emulation is active, instructions that have not yet executed are shown with their operands already resolved to the values they would have at that point. Conditional branches show which path will be taken. This is particularly useful when stepping through:
+
+- **Jump tables** — the computed target is shown without having to step through it
+- **PLT/GOT entries** — the resolved symbol name appears as an annotation
+- **ROP chains** — each gadget's effect on registers is visible ahead of time
+
+<Note>
+Unicorn emulation is best-effort. It stops if it encounters an unmapped memory access or a syscall. In those cases pwndbg falls back to linear disassembly for the remaining instructions.
+</Note>
+
+## Operand resolution and condition evaluation
+
+Even without Unicorn, pwndbg resolves operands using live register and memory values at the current stop. For example, a `mov rax, [rbx+0x10]` instruction will show the actual address being read and, if that address is mapped and readable, the value that will be loaded.
+
+For conditional branches, pwndbg evaluates the flags at the current point and marks the instruction with the branch that will be taken, so you never have to mentally evaluate `jne` vs `je` against the current flag state.
+
+## PLT and GOT annotation
+
+Calls and jumps through the Procedure Linkage Table are annotated with the resolved symbol name. When a `call printf@plt` is shown, pwndbg reads the GOT to find the actual libc address and displays `printf` alongside the PLT stub address. This works for both fully resolved and lazy-bound GOT entries.
+
+## ROP gadget search
+
+pwndbg integrates with two external ROP tools that can be called from inside the debugger session, where they have access to the full runtime address space — including all loaded shared libraries — rather than just the main binary:
+
+### rop (ROPgadget)
+
+```text
+rop --grep 'pop rdi; ret'
+rop --grep 'pop rdi' -- --nojop
+rop --symbols
+```
+
+`rop` wraps [ROPgadget](https://github.com/JonathanSalwan/ROPgadget) and runs it against the mapped memory of the current process. `--grep` filters the output to lines matching a string. Extra arguments after `--` are passed directly to ROPgadget.
+
+### ropper (GDB only)
+
+```text
+ropper -- --search 'pop rdi; ret;'
+ropper -- --console
+```
+
+`ropper` wraps the [ropper](https://github.com/sashs/Ropper) tool. Passing `--console` opens an interactive ropper shell attached to the current process image.
+
+<Tip>
+Because both `rop` and `ropper` run against the live process memory, they find gadgets in every library that is currently loaded, including dynamically linked libc, ld, and any other shared objects — something static analysis tools cannot do reliably.
+</Tip>

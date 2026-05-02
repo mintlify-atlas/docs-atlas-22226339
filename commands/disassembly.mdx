@@ -1,0 +1,149 @@
+---
+title: "Disassembly and Unicorn emulation commands in pwndbg"
+description: "Disassemble near PC with resolved operands and branch annotations, or trace forward through Unicorn-emulated instructions to follow indirect jumps."
+---
+
+pwndbg's disassembly layer goes beyond raw bytes. It resolves operand values from live registers and memory, evaluates conditional branches to show which path will be taken, and draws branch-target arrows so you can follow control flow at a glance. The `emulate` command takes this further by running instructions inside the [Unicorn](https://www.unicorn-engine.org/) CPU emulator — every instruction's outcome is computed rather than predicted, making it reliable for indirect calls, computed jumps, and PLT stubs.
+
+## nearpc
+
+Disassembles instructions near a given address (default: `$pc`). By default it shows a few lines before the current PC and several lines after it, with the current instruction highlighted.
+
+```text
+nearpc [address] [count]
+```
+
+**Aliases:** `pdisass`, `u`
+
+| Argument | Default | Description |
+| --- | --- | --- |
+| `address` | `$pc` | Address to disassemble near. If this is the only argument and the value is small (< 0x100), it is treated as `count` instead. |
+| `count` | 10 | Number of forward lines to disassemble |
+
+| Flag | Description |
+| --- | --- |
+| `-r N` / `--reverse N` | Show N lines before the target address |
+| `-t N` / `--total N` | Fix the total number of lines displayed (backward lines are drawn from the cache) |
+| `-e` / `--emulate` | Use Unicorn emulation to follow indirect branches rather than linear decode |
+| `-n` / `--no-branch` | Disable branch visualisation arrows |
+| `-f [addr]` / `--function [addr]` | Disassemble the entire function containing the given address (defaults to `$pc`) |
+
+```text
+pwndbg> nearpc
+ ► 0x401155 <main>       push   rbp
+   0x401156 <main+1>     mov    rbp, rsp
+   0x401159 <main+4>     sub    rsp, 0x10
+   0x40115d <main+8>     lea    rax, [rip + 0xea8]       # "Enter password: "
+   0x401164 <main+15>    mov    qword ptr [rbp - 8], rax
+   0x401168 <main+19>    call   puts@plt                  <puts@plt>
+```
+
+```text
+pwndbg> nearpc 20
+   ...20 instructions around $pc...
+```
+
+### Operand resolution
+
+pwndbg reads live register and memory values to fill in operand annotations. For example, `lea rax, [rip + 0xea8]` is shown with the resolved destination address and its contents. This works for:
+
+- Immediate and register-displacement addressing modes
+- RIP-relative loads
+- Pointer dereferences where the target memory is readable
+
+### Branch annotations
+
+Conditional branches are annotated with a `✓` (taken) or `✗` (not taken) marker based on the current EFLAGS/CPSR value. Unconditional jumps show an arrow to the target. Use `-n` to suppress these annotations if the output feels cluttered.
+
+```text
+   0x40116c <main+23>    test   eax, eax
+   0x40116e <main+25>  ✗ je     0x401180 <main+43>
+   0x401170 <main+27>    ...
+```
+
+### PLT/GOT annotations
+
+When a `call` targets a PLT entry, pwndbg resolves the corresponding GOT slot and annotates the instruction with the resolved symbol name and the actual function address:
+
+```text
+   0x401168 <main+19>    call   puts@plt                  <puts@plt>
+                              ↳ _IO_puts (0x7ffff7e61de0)
+```
+
+### Function disassembly
+
+Use `-f` to disassemble an entire function. Pass a function name or address, or omit the argument to disassemble the function containing `$pc`:
+
+```text
+pwndbg> nearpc -f main
+   0x401155 <main>       push   rbp
+   0x401156 <main+1>     mov    rbp, rsp
+   ...
+   0x4011a2 <main+77>    ret
+```
+
+---
+
+## emulate
+
+Like `nearpc`, but runs each instruction through the [Unicorn](https://www.unicorn-engine.org/) CPU emulator starting from the current or specified `$pc`. Because the CPU state is actually advanced rather than linearly decoded, `emulate` correctly follows indirect calls (`call rax`), computed jumps (`jmp [rax*8+rbx]`), and resolved PLT stubs.
+
+```text
+emulate [address] [count]
+```
+
+| Argument | Default | Description |
+| --- | --- | --- |
+| `address` | `$pc` | Address to start emulation from |
+| `count` | 10 | Number of lines to display |
+
+| Flag | Description |
+| --- | --- |
+| `-r N` / `--reverse N` | Show N cached lines before the emulation start |
+| `-t N` / `--total N` | Fix the total number of lines (backward from cache, forward from emulation) |
+
+<Warning>
+`emulate` requires the `unicorn` Python package. If it is not installed, the command falls back to linear disassembly. Install it with:
+
+```bash
+pip install unicorn
+```
+</Warning>
+
+```text
+pwndbg> emulate
+ ► 0x401155 <main>       push   rbp
+   0x401156 <main+1>     mov    rbp, rsp          rbp => 0x7fffffffe3b0
+   0x401159 <main+4>     sub    rsp, 0x10         rsp => 0x7fffffffe3a0
+   0x40115d <main+8>     lea    rax, [rip + 0xea8]  rax => 0x402010 ("Enter password: ")
+   0x401164 <main+15>    mov    qword ptr [rbp - 8], rax
+   0x401168 <main+19>    call   puts@plt           ↳ _IO_puts (0x7ffff7e61de0)
+```
+
+### How emulation differs from nearpc
+
+| Feature | `nearpc` | `emulate` |
+| --- | --- | --- |
+| Indirect branch resolution | Reads live registers at snapshot time | Executes each instruction and tracks state |
+| Computed jumps | May show incorrect target | Follows actual computed target |
+| PLT stub resolution | Annotates with GOT value | Steps through stub, shows real destination |
+| Side effects | None (read-only) | Updates emulated CPU/memory state |
+| Requires Unicorn | No | Yes |
+
+### Condition evaluation
+
+Because emulation advances actual CPU state, conditional branches are always correctly evaluated — including cases where the branch condition depends on an earlier arithmetic instruction in the emulated window.
+
+```text
+   0x401170 <main+27>    cmp    eax, 0x0          eax: 0x1
+   0x401173 <main+30>  ✗ je     0x401180 <main+43>
+   0x401175 <main+32>    mov    edi, 0x1
+```
+
+### Combining with nearpc
+
+`nearpc -e` (the `--emulate` flag) is a shorthand for running `nearpc` in emulation mode, equivalent to calling `emulate` directly:
+
+```text
+pwndbg> nearpc -e 15
+```

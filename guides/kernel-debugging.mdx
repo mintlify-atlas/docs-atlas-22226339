@@ -1,0 +1,165 @@
+---
+title: "Linux kernel debugging with pwndbg over QEMU GDB stub"
+description: "Set up QEMU kernel debugging with pwndbg and explore kernel internals using commands for tasks, modules, memory, subsystems, and address translation."
+---
+
+Pwndbg ships a comprehensive set of kernel-aware commands that work when you attach GDB to a QEMU virtual machine running Linux. These commands let you inspect kernel state — tasks, modules, allocators, BPF programs, netfilter rules, DMA buffers, and more — without leaving the debugger. Most kernel commands require GDB; LLDB support is limited and noted where it differs.
+
+## QEMU setup
+
+Start the target kernel with a GDB stub exposed on a local port:
+
+```bash
+qemu-system-x86_64 \
+  -kernel bzImage \
+  -append "console=ttyS0 nokaslr" \
+  -initrd initramfs.cpio.gz \
+  -nographic \
+  -s -S
+```
+
+The `-s` flag opens the GDB stub on `localhost:1234`. The `-S` flag pauses execution until GDB connects. Then attach from pwndbg:
+
+```text
+target remote localhost:1234
+```
+
+Once connected, pwndbg automatically detects the QEMU kernel context and enables the `k*` commands.
+
+<Note>
+Most kernel commands are GDB-only. LLDB support for kernel debugging is experimental and not all commands are available.
+</Note>
+
+## Kernel info
+
+These commands give you a quick read on the running kernel.
+
+**`kbase`** — Finds the kernel virtual base address. Use `-r` to rebase a loaded symbol file, and `-v` to show additional physical address details.
+
+**`kversion`** — Outputs the kernel version string (equivalent to `/proc/version`).
+
+**`kcmdline`** — Returns the kernel command line (equivalent to `/proc/cmdline`).
+
+**`kconfig [config_name]`** — Outputs the kernel config. Pass a config name to filter results. Use `-l FILE_PATH` to load a config file from disk.
+
+**`kchecksec`** — Checks the running kernel for hardening configuration options such as SMEP, SMAP, KASLR, and stack protectors.
+
+```text
+pwndbg> kbase
+pwndbg> kversion
+pwndbg> kcmdline
+pwndbg> kconfig CONFIG_RANDOMIZE_BASE
+pwndbg> kchecksec
+```
+
+## Tasks and modules
+
+**`ktask [task_name]`** — Displays information about kernel tasks. Pass a name substring to filter the task list.
+
+**`kcurrent [pid] [--set]`** — Shows the task currently being debugged. Pass a PID to show a specific task. The `--set` flag changes which task is used by commands like `kfile`, `pagewalk`, and `vmmap` — it does not modify kernel memory.
+
+**`kmod [module_name] [-l PATH]`** — Lists loaded kernel modules. Filter by name substring, or use `-l` to load a module's symbol file.
+
+```text
+pwndbg> ktask
+pwndbg> ktask kworker
+pwndbg> kcurrent
+pwndbg> kcurrent 1234 --set
+pwndbg> kmod
+pwndbg> kmod xfs
+```
+
+## Memory allocators
+
+### Slab (SLUB)
+
+**`slab list [filter]`** — Lists SLUB caches, optionally filtered by name.
+
+**`slab info [-v] [-c CPU] [-n NODE] [-p] [-a] name`** — Dumps detailed information about a named cache. Use `-p` for partial lists and `-a` for the active list.
+
+**`slab contains addr`** — Given an address, identifies which slab cache owns it.
+
+```text
+pwndbg> slab list kmalloc
+pwndbg> slab info kmalloc-64
+pwndbg> slab contains 0xffff888003a00040
+```
+
+### Buddy allocator
+
+**`buddydump`** — Displays metadata and freelists for the buddy allocator. Supports filtering by zone (`-z`), order (`-o`), migration type (`-m`), and CPU (`-c`). Use `-f ADDR` to search for a specific page in the free lists.
+
+### Allocation tracing
+
+**`kmem-trace`** — Traces SLUB and buddy allocations and frees across one debugger step. Run it when the PC is on a `call` instruction to capture all allocations triggered by that function call. Use `-s` for slab-only, `-b` for buddy-only, and `--all` to capture allocations from all threads.
+
+```text
+pwndbg> buddydump -z DMA32
+pwndbg> kmem-trace
+pwndbg> kmem-trace --trace-slab -c finish
+```
+
+## Subsystem inspection
+
+**`kbpf`** — Prints information about loaded BPF programs and maps. Use `-p` for programs, `-m` for maps, and `-b N` to set a breakpoint at the start of the Nth JIT-compiled eBPF program.
+
+**`knft`** — Inspects the netfilter subsystem. Subcommands include `dump`, `list-tables`, `list-chains`, `list-rules`, `list-sets`, `list-objects`, and `list-flowtables`. Pass `-n NSID` to target a specific network namespace.
+
+**`kdmabuf`** — Prints DMA buffer info for the running kernel.
+
+**`kdmesg [-T]`** — Displays the kernel ring buffer (dmesg). Pass `-T` for human-readable timestamps.
+
+```text
+pwndbg> kbpf -p
+pwndbg> knft dump
+pwndbg> knft list-rules inet filter input
+pwndbg> kdmabuf
+pwndbg> kdmesg -T
+```
+
+## Syscall table and symbol lookup
+
+**`ksyscalls [syscall_name]`** — Displays the Linux syscall table including names and handler addresses. Filter by passing a syscall name substring.
+
+**`klookup [symbol]`** — Looks up kernel symbols by name or address. Aliases: `kallsyms`, `ks`. Use `--apply` to load symbols into the debugger (most useful for kernel modules).
+
+```text
+pwndbg> ksyscalls read
+pwndbg> klookup commit_creds
+pwndbg> klookup 0xffffffff81234567
+pwndbg> klookup xfs_ --apply
+```
+
+<Note>
+For symbolizing an entire kernel image, use [vmlinux-to-elf](https://github.com/marin-m/vmlinux-to-elf) or compile the kernel yourself with debug symbols. `klookup --apply` is most useful for kernel modules.
+</Note>
+
+## Address translation and page tables
+
+**`pagewalk vaddr [--pgd ENTRY]`** — Walks the page table hierarchy for a virtual address, showing each level of the translation.
+
+**`v2p vaddr`** — Translates a virtual address to its corresponding physmap address.
+
+**`p2v paddr`** — Translates a physical address to its corresponding virtual address.
+
+**`pageinfo page`** — Converts a pointer to a `struct page` to its corresponding virtual address.
+
+```text
+pwndbg> pagewalk 0xffffffff81000000
+pwndbg> v2p 0xffff888000000000
+pwndbg> p2v 0x1000000
+pwndbg> pageinfo 0xffffea0000400000
+```
+
+The `kernel-vmmap` config parameter controls how pwndbg renders the virtual memory map when debugging via QEMU. The default `page-tables` method walks page tables directly; alternatives include `pt-dump`, `monitor`, and `none`.
+
+## Model Specific Registers
+
+**`msr [msr] [-w value] [-l] [-r RANGE]`** — Reads or writes x86 Model Specific Registers. Use `-l` to list common MSRs for the current architecture, `-w` to write a value, and `-r` to read a range of MSR indices.
+
+```text
+pwndbg> msr -l
+pwndbg> msr IA32_EFER
+pwndbg> msr 0xc0000080 -w 0xd01
+pwndbg> msr -r 0x10-0x20
+```

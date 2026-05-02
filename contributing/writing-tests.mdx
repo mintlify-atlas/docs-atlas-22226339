@@ -1,0 +1,245 @@
+---
+title: "pwndbg testing guide: dual-debugger and unit tests"
+description: "How to write dual-debugger tests that run under both GDB and LLDB, GDB-only tests for debugger-specific functionality, and how to run the test suite."
+---
+
+pwndbg has four categories of tests: userspace tests (x86\_64), cross-architecture tests, Linux kernel tests, and unit tests. For most new functionality, you will write a **dual-debugger test** in `tests/library/dbg/tests/` — the same test file runs under both GDB and LLDB. This is the default and preferred approach. GDB-only tests are a last resort for truly GDB-specific behavior.
+
+<Warning>
+Write tests in `tests/library/dbg/tests/` by default. Only use `tests/library/gdb/tests/` when the functionality being tested is genuinely debugger-specific and cannot be abstracted.
+</Warning>
+
+## Dual-debugger vs. GDB-only tests
+
+<Tabs>
+  <Tab title="Dual-debugger (preferred)">
+    Tests in `tests/library/dbg/tests/` run under both GDB and LLDB using a debugger-agnostic control API. Use this for all new tests.
+
+    ```python
+    # tests/library/dbg/tests/test_my_feature.py
+    from __future__ import annotations
+
+    from ....host import Controller
+    from . import get_binary
+    from . import pwndbg_test
+
+    BINARY = get_binary("reference-binary.native.out")
+
+    @pwndbg_test
+    async def test_my_feature(ctrl: Controller) -> None:
+        await ctrl.launch(BINARY)
+        result = await ctrl.execute_and_capture("my-command")
+        assert "expected output" in result
+    ```
+
+    Run with GDB:
+    ```bash
+    ./tests.sh -d gdb -g dbg
+    ```
+
+    Run with LLDB:
+    ```bash
+    ./tests.sh -d lldb -g dbg
+    ```
+  </Tab>
+  <Tab title="GDB-only (last resort)">
+    Tests in `tests/library/gdb/tests/` only run under GDB. These exist mostly as a legacy holdover and to cover features that truly have no LLDB equivalent. If you find a test present in both `gdb/` and `dbg/` that tests the same thing, remove the `gdb/` copy.
+
+    ```python
+    # tests/library/gdb/tests/test_gdb_specific.py
+    import gdb
+    import pwndbg
+    import tests
+
+    BINARY = tests.get_binary("test.out")
+
+    def test_gdb_only_feature(start_binary):
+        start_binary(BINARY)
+        assert pwndbg.aglib.regs.read_reg("rsp") > 0
+    ```
+
+    Run with:
+    ```bash
+    ./tests.sh -d gdb -g gdb
+    ```
+  </Tab>
+</Tabs>
+
+## Writing a dual-debugger test
+
+Each test function is decorated with `@pwndbg_test` and declared `async`. The `ctrl: Controller` parameter provides all debugger control. pwndbg imports must happen inside the function body, not at the top of the file.
+
+Here is a real test from `tests/library/dbg/tests/test_mallocng.py`:
+
+```python
+from __future__ import annotations
+
+import re
+from pathlib import Path
+
+import pytest
+
+from ....host import Controller
+from . import break_at_sym
+from . import get_binary
+from . import launch_to
+from . import pwndbg_test
+
+HEAP_MALLOCNG_DYN    = get_binary("heap_musl_dyn.native.out")
+HEAP_MALLOCNG_STATIC = get_binary("heap_musl_static.native.out")
+
+re_addr = r"0x[0-9a-fA-F]{1,12}"
+
+@pwndbg_test
+@pytest.mark.parametrize(
+    "binary", [HEAP_MALLOCNG_DYN, HEAP_MALLOCNG_STATIC], ids=["dynamic", "static"]
+)
+async def test_mallocng_slot_start(ctrl: Controller, binary: Path):
+    import pwndbg.color as color
+
+    await launch_to(ctrl, binary, "break_here")
+    await ctrl.finish()
+
+    slotu_buffer2_out = color.strip(await ctrl.execute_and_capture("ng-slotu buffer2"))
+    slots_buffer2_out = color.strip(await ctrl.execute_and_capture("ng-slots buffer2"))
+    slotu_buffer5_out = color.strip(await ctrl.execute_and_capture("ng-slotu buffer5"))
+    slots_buffer5_out = color.strip(await ctrl.execute_and_capture("ng-slots buffer5"))
+
+    assert "not cyclic" in slotu_buffer2_out
+    assert slotu_buffer2_out == slots_buffer2_out
+
+    if binary == HEAP_MALLOCNG_STATIC:
+        assert "not cyclic" not in slotu_buffer5_out
+        assert slotu_buffer5_out != slots_buffer5_out
+```
+
+### What each import provides
+
+- **`@pwndbg_test`** — Required decorator that wraps the async function as a pytest test and sets up an isolated debugger session.
+- **`Controller`** — The debugger-agnostic control interface. All debugger actions go through this object.
+- **`get_binary(name)`** — Returns a `pathlib.Path` to a precompiled binary in `tests/binaries/host/`. Reuse existing binaries where possible; add a new one only if needed.
+- **`launch_to(ctrl, binary, symbol)`** — Convenience helper: launches the binary and runs to the named symbol.
+- **`break_at_sym`** — Sets a breakpoint at a symbol without continuing.
+
+### Controller methods
+
+The `Controller` class is defined in `tests/host/__init__.py`. Key methods:
+
+| Method | Description |
+|--------|-------------|
+| `await ctrl.launch(binary)` | Load and start a binary |
+| `await ctrl.execute_and_capture(cmd)` | Run a pwndbg command, return its output as a string |
+| `await ctrl.cont()` | Continue execution |
+| `await ctrl.finish()` | Run until the current function returns |
+| `await ctrl.next()` | Step over one source line |
+| `await ctrl.step()` | Step into one instruction |
+
+<Note>
+Do not call `ctrl.execute()` with debugger-specific commands like GDB's `info registers`. If you need a new debugger action, add it to `Controller` in `tests/host/__init__.py`.
+</Note>
+
+### Parameterized tests
+
+Use `@pytest.mark.parametrize` when you want to run the same test against multiple binaries or inputs. The `@pwndbg_test` decorator must come first (outermost):
+
+```python
+@pwndbg_test
+@pytest.mark.parametrize(
+    "binary", [HEAP_MALLOCNG_DYN, HEAP_MALLOCNG_STATIC], ids=["dynamic", "static"]
+)
+async def test_mallocng_slot_start(ctrl: Controller, binary: Path):
+    ...
+```
+
+## Test binaries
+
+Binaries live in `tests/binaries/host/`. For heap tests, a typical C test binary looks like:
+
+```c
+#include <stdlib.h>
+#include <string.h>
+
+void break_here() {};
+
+int main () {
+  char* buffer1 = malloc(0x50);
+  char* buffer2 = malloc(0x50);
+
+  break_here();
+
+  memset(buffer1, 0xA, 0x50);
+  memset(buffer2, 0xB, 0x50);
+  // ...
+}
+```
+
+The `break_here()` function is a convenient breakpoint target: set a breakpoint on it, run to it, then use `ctrl.finish()` to return to `main` with the heap already initialized.
+
+## Running tests
+
+### With Docker (matches CI)
+
+```bash
+# Dual-debugger tests with GDB
+docker compose run --rm ubuntu24.04-mount ./tests.sh -d gdb -g dbg
+
+# Dual-debugger tests with LLDB
+docker compose run --rm ubuntu24.04-mount ./tests.sh -d lldb -g dbg
+
+# Legacy GDB tests
+docker compose run --rm ubuntu24.04-mount ./tests.sh -d gdb -g gdb
+
+# Unit tests
+docker compose run --rm ubuntu24.04-mount ./unit-tests.sh
+```
+
+Remove `-mount` to run from a clean slate (all binaries are recompiled).
+
+### Without Docker
+
+```bash
+./tests.sh -d gdb -g dbg          # Dual-debugger tests, GDB driver
+./tests.sh -d lldb -g dbg         # Dual-debugger tests, LLDB driver
+./tests.sh -d gdb -g gdb          # Legacy GDB tests
+./unit-tests.sh                   # Unit tests
+```
+
+### Filtering tests
+
+Pass a regex after the group flag to run only matching tests:
+
+```bash
+./tests.sh -d gdb -g dbg test_config        # Tests matching "test_config"
+./tests.sh -d gdb -g dbg heap               # All heap-related tests
+./tests.sh -d gdb -g gdb test_symbol        # GDB-only tests matching "test_symbol"
+```
+
+### Other useful flags
+
+| Flag | Effect |
+|------|--------|
+| `-v` / `--verbose` | Show all test output, not just failures |
+| `-s` / `--serial` | Run tests one at a time instead of in parallel |
+| `-p` / `--pdb` | Drop into Python debugger on test failure |
+| `--collect-only` | List tests that would run without running them |
+| `--clean` | Delete all compiled test binaries |
+
+Run `./tests.sh --help` to see the full option list.
+
+## Unit tests
+
+Unit tests in `tests/unit_tests/` run with plain pytest — no debugger required. Use them for testing pure-Python logic in `pwndbg/lib/`:
+
+```bash
+./unit-tests.sh
+```
+
+## Cross-architecture and kernel tests
+
+For architecture-specific tests, see `tests/library/qemu_user/`. These use QEMU user-mode emulation and follow the same GDB test format.
+
+Kernel tests are in `tests/library/qemu_system/` and run via QEMU system emulation:
+
+```bash
+./kernel-tests.sh
+```

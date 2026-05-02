@@ -1,0 +1,499 @@
+---
+title: "Linux, libc, and ELF binary analysis and inspection"
+description: "Inspect ELF sections, GOT and PLT state, ASLR settings, TLS base, seccomp filters, and libc version details while debugging Linux binaries in pwndbg."
+---
+
+These commands give you visibility into the Linux-specific structures that surround a running binary: the ELF headers and sections, the dynamic linker's GOT and PLT tables, ASLR state, thread-local storage, and the libc version in use. They are essential for understanding a binary's runtime layout before writing an exploit.
+
+## GOT and PLT
+
+### `got`
+
+Shows the state of the Global Offset Table for the current process. By default, only writable GOT entries in the main executable are shown. Use flags to widen the scope.
+
+```bash
+got [-p PATH] [-a] [-r] [symbol_filter]
+```
+
+<ParamField path="symbol_filter" type="string" optional>
+  Filter entries by symbol name substring.
+</ParamField>
+
+<ParamField path="-p / --path PATH" type="string" optional>
+  Filter entries by library or objfile path substring.
+</ParamField>
+
+<ParamField path="-a / --all" type="flag" optional>
+  Include all loaded libraries and the target executable.
+</ParamField>
+
+<ParamField path="-r / --show-readonly" type="flag" optional>
+  Also display read-only GOT entries, which are hidden by default.
+</ParamField>
+
+**Examples**
+
+<CodeGroup>
+
+```bash All writable entries
+got
+```
+
+```bash Filter by symbol
+got -r puts
+```
+
+```bash Filter by library path
+got -p libc
+```
+
+```bash All entries in the address space
+got -ra
+```
+
+</CodeGroup>
+
+---
+
+### `gotplt`
+
+Prints all symbols found in the `.got.plt` section, if one exists.
+
+```bash
+gotplt
+```
+
+---
+
+### `plt`
+
+Prints symbols found in Procedure Linkage Table sections. By default, only symbols ending in `@plt` are shown.
+
+```bash
+plt [-a]
+```
+
+<ParamField path="-a / --all-symbols" type="flag" optional>
+  Print all symbols, not just those ending in `@plt`.
+</ParamField>
+
+---
+
+## ELF structure
+
+### `elfsections`
+
+Prints the section mappings from the ELF header, including addresses and permissions. If the binary has not started yet, or when `--no-rebase` is used, permissions are based on section flags rather than the live vmmap.
+
+```bash
+elfsections [-R]
+```
+
+<ParamField path="-R / --no-rebase" type="flag" optional>
+  Print the non-rebased (on-disk) section addresses.
+</ParamField>
+
+**Examples**
+
+```bash
+elfsections
+elfsections --no-rebase
+```
+
+---
+
+### `linkmap`
+
+Shows the state of the runtime link map — the linked list of loaded shared libraries maintained by `ld.so`.
+
+```bash
+linkmap
+```
+
+---
+
+### `piebase`
+
+Calculates the virtual address (VA) for a given relative virtual address (RVA) from the PIE base of a loaded module.
+
+```bash
+piebase [offset] [module]
+```
+
+<ParamField path="offset" type="integer" optional>
+  RVA to add to the PIE base. Defaults to `0`.
+</ParamField>
+
+<ParamField path="module" type="string" optional>
+  Name of the module to use as the base. Defaults to the target executable.
+</ParamField>
+
+---
+
+## ASLR
+
+### `aslr`
+
+Shows the current ASLR status, or enables/disables it. The change takes effect the next time the target process is started.
+
+```bash
+aslr [{on,off}]
+```
+
+<ParamField path="state" type="string" optional>
+  Pass `on` or `off` to change ASLR state. Omit to display current status.
+</ParamField>
+
+<Warning>
+  Changing ASLR state does not affect the currently running process. Restart the target for the change to take effect.
+</Warning>
+
+---
+
+## Process arguments and environment
+
+### `argc`
+
+Prints the number of arguments passed to the process.
+
+```bash
+argc
+```
+
+---
+
+### `argv`
+
+Prints the contents of `argv`. Pass an index to retrieve a specific argument.
+
+```bash
+argv [i]
+```
+
+<ParamField path="i" type="integer" optional>
+  Index of the argument to display.
+</ParamField>
+
+---
+
+### `envp`
+
+Prints the process environment. Pass a variable name to look up a specific entry.
+
+**Aliases:** `env`, `environ`
+
+```bash
+envp [name]
+```
+
+<ParamField path="name" type="string" optional>
+  Name of the environment variable to display.
+</ParamField>
+
+---
+
+## Auxiliary vector
+
+### `auxv`
+
+Prints information from the Auxiliary ELF Vector (auxv), which the kernel passes to every new process.
+
+```bash
+auxv
+```
+
+---
+
+### `auxv-explore`
+
+Explores and prints information from the Auxiliary ELF Vector in an interactive format.
+
+```bash
+auxv-explore
+```
+
+---
+
+## Memory strings
+
+### `strings`
+
+Extracts and displays ASCII strings from readable memory pages of the debugged process. Useful for quickly finding embedded text, format strings, or hardcoded values.
+
+```bash
+strings [-n N] [--save-as SAVE_AS] [page_names ...]
+```
+
+<ParamField path="page_names" type="string[]" optional>
+  One or more memory mapping names to search (e.g. `libc`, `heap`, `stack`). Searches all readable pages if omitted.
+</ParamField>
+
+<ParamField path="-n N" type="integer" optional>
+  Minimum string length to include. Defaults to `4`.
+</ParamField>
+
+<ParamField path="--save-as SAVE_AS" type="string" optional>
+  Save output to a file instead of printing it.
+</ParamField>
+
+**Examples**
+
+<CodeGroup>
+
+```bash Search libc
+strings libc
+```
+
+```bash Search multiple regions
+strings libc heap stack
+```
+
+```bash Save output to file
+strings --save-as out.txt
+```
+
+</CodeGroup>
+
+---
+
+## Thread-local storage
+
+### `tls`
+
+Prints the base address of the current thread's Thread Local Storage (TLS).
+
+```bash
+tls [-p] [-a]
+```
+
+<ParamField path="-p / --pthread-self" type="flag" optional>
+  Obtain the TLS address by calling `pthread_self()` in the target.
+</ParamField>
+
+<ParamField path="-a / --all" type="flag" optional>
+  Do not truncate the dump output.
+</ParamField>
+
+---
+
+## Threads
+
+### `threads`
+
+Lists all threads belonging to the current inferior. See also [`killthreads`](/commands/process#killthreads) on the process page.
+
+```bash
+threads [-c] [num_threads]
+```
+
+<ParamField path="num_threads" type="integer" optional>
+  Maximum number of threads to display. Omit to show all.
+</ParamField>
+
+<ParamField path="-c / --config" type="flag" optional>
+  Respect the `context-max-threads` configuration to limit the number shown.
+</ParamField>
+
+---
+
+## libc information
+
+### `libcinfo`
+
+Shows various information about the libc currently mapped into the process, such as its version and build ID.
+
+```bash
+libcinfo
+```
+
+---
+
+## Error handling
+
+### `errno`
+
+Converts an errno value to its string representation. If no argument is given, the value is read from `__errno_location`.
+
+```bash
+errno [err]
+```
+
+<ParamField path="err" type="integer" optional>
+  Errno value to look up. Defaults to the current value of `errno` in the process.
+</ParamField>
+
+---
+
+## GOT tracking
+
+### `track-got`
+
+<Note>GDB only</Note>
+
+Controls GOT modification tracking. Once enabled, pwndbg monitors writes to GOT entries and records the history of each entry's value over time.
+
+```bash
+track-got {enable,disable,info,query}
+```
+
+| Subcommand | Description |
+|---|---|
+| `track-got enable` | Enable GOT tracking. |
+| `track-got disable` | Disable GOT tracking. |
+| `track-got info [-s SONAME] [-w] [-f FNNAME]` | Show an overview of all tracked GOT entries, with optional filters for shared object name and function name. `-w` limits output to writable entries. |
+| `track-got query <address>` | Show detailed tracking history for a single GOT entry at `address`. |
+
+---
+
+## Seccomp
+
+### `parse-seccomp`
+
+Parses a `struct sock_fprog` from memory and dumps the BPF filter rules it contains.
+
+```bash
+parse-seccomp addr
+```
+
+<ParamField path="addr" type="address" required>
+  Address of a `sock_fprog` structure in the target process (e.g. `0xdeadbeef`).
+</ParamField>
+
+---
+
+## One-gadget RCE
+
+### `onegadget`
+
+Searches libc for one-gadget RCE gadgets — single-instruction sequences that spawn a shell when constraints are met. Uses the [one_gadget](https://github.com/david942j/one_gadget) tool by david942j.
+
+<Warning>
+  `one_gadget` must be installed separately: `gem install one_gadget`
+</Warning>
+
+```bash
+onegadget [--show-unsat] [--no-unknown] [-v]
+```
+
+<ParamField path="--show-unsat" type="flag" optional>
+  Also show gadgets whose constraints are not satisfiable.
+</ParamField>
+
+<ParamField path="--no-unknown" type="flag" optional>
+  Hide gadgets with unknown constraint status.
+</ParamField>
+
+<ParamField path="-v / --verbose" type="flag" optional>
+  Show verbose output.
+</ParamField>
+
+---
+
+## Binary security settings
+
+### `checksec`
+
+Prints security properties of the target binary using the `checksec` tool, such as RELRO status, stack canaries, NX, PIE, and hardware mitigations.
+
+```bash
+checksec [-f FILE]
+```
+
+<ParamField path="-f / --file FILE" type="string" optional>
+  Path to the binary to check. Defaults to the currently loaded executable.
+</ParamField>
+
+**Example output**
+
+```text
+pwndbg> checksec
+File:     /usr/bin/bash
+Arch:     amd64
+RELRO:      Full RELRO
+Stack:      Canary found
+NX:         NX enabled
+PIE:        PIE enabled
+SHSTK:      Enabled
+IBT:        Enabled
+```
+
+---
+
+## Cyclic patterns
+
+### `cyclic`
+
+Generates a De Bruijn cyclic pattern for use in buffer overflow exploits, or finds the offset of a pattern value within the sequence. The pattern is designed so that any 4-byte (or configurable-length) subsequence appears exactly once, making it easy to determine a crash offset.
+
+<Tip>
+  To write the cyclic pattern directly into process memory, use the `spray` command instead.
+</Tip>
+
+```bash
+cyclic [-a charset] [-n length] [-l lookup_value] [-d] [count] [filename]
+```
+
+<ParamField path="count" type="integer" optional>
+  Number of characters to generate. Defaults to `100`.
+</ParamField>
+
+<ParamField path="filename" type="string" optional>
+  Write the pattern to a file instead of printing it.
+</ParamField>
+
+<ParamField path="-a / --alphabet charset" type="string" optional>
+  Alphabet to use for the pattern. Defaults to `abcdefghijklmnopqrstuvwxyz`.
+</ParamField>
+
+<ParamField path="-n / --length length" type="integer" optional>
+  Size of the unique subsequences. Defaults to `4`.
+</ParamField>
+
+<ParamField path="-l / -o / --lookup lookup_value" type="string" optional>
+  Look up the offset of a value in the pattern. Accepts integer constants and expressions.
+</ParamField>
+
+<ParamField path="-d / --detect" type="flag" optional>
+  Scan all registers and register-pointed memory for cyclic pattern values and report their offsets.
+</ParamField>
+
+**Examples**
+
+<CodeGroup>
+
+```bash Generate 200-byte pattern
+cyclic 200
+```
+
+```bash Find offset of a crash value
+cyclic -l 0x61616164
+```
+
+```bash Auto-detect from registers after crash
+cyclic -d
+```
+
+```bash Save pattern to file
+cyclic 200 payload.bin
+```
+
+</CodeGroup>
+
+---
+
+## macOS / Darwin
+
+### `commpage`
+
+Dumps all values from the macOS commpage — the kernel-shared read-only memory page that macOS maps into every process for fast system call data.
+
+```bash
+commpage
+commpage -v
+```
+
+| Flag | Description |
+| --- | --- |
+| `-v` / `--verbose` | Include description column in the output |
+
+Rows are color-coded: red for undocumented fields, yellow for unused ones. This command is only useful when debugging Mach-O processes on macOS with LLDB.

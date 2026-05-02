@@ -1,0 +1,72 @@
+---
+title: "Bare-metal and embedded debugging with pwndbg"
+description: "Configure pwndbg safely for bare-metal and embedded targets where reading unknown memory regions can trigger hardware side effects or crash the target."
+---
+
+When debugging embedded devices or any system with memory-mapped I/O (MMIO) peripherals, the debugger must not read or write memory regions it hasn't been explicitly directed to access. Touching certain MMIO-mapped addresses can reset hardware state, trigger interrupts, clear status registers, or crash the target entirely. Unlike user-space debugging, there is usually no reliable way for the debugger to detect which regions are safe, so the safest default is to avoid touching any memory unless the user asks for it.
+
+Pwndbg's default behavior is optimized for user-space and kernel debugging, which means it proactively explores memory. For bare-metal and embedded targets, you need to disable that exploration.
+
+## Recommended `.gdbinit` settings
+
+Add the following to a `.gdbinit` file in your project directory. GDB loads it after `~/.gdbinit`, so you can keep these settings project-specific without affecting other debugging sessions.
+
+```text
+set remotetimeout 20
+set auto-explore-pages no
+set auto-explore-auxv no
+set auto-explore-stack no
+set context-sections regs disasm code backtrace expressions threads heap_tracker
+set dereference-limit 0
+```
+
+### What each setting does
+
+**`remotetimeout 20`** — Increases the GDB remote protocol timeout to 20 seconds. Embedded targets connected over JTAG or a slow serial link can take much longer to respond than a local process. The default timeout of 2 seconds is often too short and causes spurious disconnects.
+
+**`auto-explore-pages no`** — Prevents pwndbg from attempting to infer memory map permissions when the target doesn't provide them. The default `warn` setting will attempt to probe memory and display a warning; `no` disables the probe entirely. On MMIO targets, even a probe read can have side effects.
+
+**`auto-explore-auxv no`** — Disables pwndbg's attempt to read auxiliary vector information from the target stack. The AUXV region may not exist or may not be safe to read on bare-metal targets.
+
+**`auto-explore-stack no`** — Disables automatic stack exploration. Stack scanning reads a range of memory to find stack boundaries, which can stall or crash a target where the stack pointer points near MMIO.
+
+**`dereference-limit 0`** — Sets the maximum number of pointer dereferences in a chain to zero. This prevents pwndbg from speculatively following pointer chains when printing register values and memory content in the context display.
+
+### Disabling context panels
+
+The `context-sections` setting shown above explicitly lists the safe panels to display: `regs disasm code backtrace expressions threads heap_tracker`. Notably, it omits the `stack` panel.
+
+The stack panel reads memory around the stack pointer to display the contents of the stack. On targets where the stack pointer may be uninitialized, pointing into MMIO, or simply pointing somewhere that hangs on read, this will stall the debugger. By removing `stack` from `context-sections`, you prevent those reads from happening automatically on every stop.
+
+To restore the stack panel for a session where you know the stack is safe:
+
+```text
+set context-sections regs disasm code backtrace expressions threads heap_tracker stack
+```
+
+## Architecture support
+
+Pwndbg supports bare-metal debugging on ARM Cortex-M and RISC-V targets, in addition to the standard x86/x86-64 and AArch64 targets. When connecting to an OpenOCD or pyOCD GDB stub for a Cortex-M target, or a RISC-V probe, the same settings above apply.
+
+For Cortex-M, the memory map is typically well-defined by the vendor SVD file, but pwndbg has no access to SVD data. Setting `auto-explore-pages no` prevents pwndbg from probing addresses in the peripheral address space (typically `0x40000000` and above on ARM Cortex-M).
+
+## Connecting to a remote target
+
+A typical GDB session for bare-metal debugging looks like:
+
+```text
+file firmware.elf
+set remotetimeout 20
+set auto-explore-pages no
+set auto-explore-auxv no
+set auto-explore-stack no
+set dereference-limit 0
+set context-sections regs disasm code backtrace expressions threads heap_tracker
+target remote localhost:3333
+```
+
+Replace `localhost:3333` with the address of your JTAG probe's GDB server (OpenOCD, pyOCD, J-Link GDB server, etc.).
+
+<Warning>
+Even with these settings, pwndbg commands that explicitly read memory (like `hexdump`, `telescope`, or `x`) will still access any address you give them. The settings above only prevent *automatic* memory reads that happen as part of context display and address exploration.
+</Warning>

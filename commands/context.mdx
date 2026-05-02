@@ -1,0 +1,283 @@
+---
+title: "Context display, watched expressions, and navigation"
+description: "Print and configure pwndbg's context sections — registers, disassembly, stack, backtrace, and watched expressions — and redirect them to separate TTYs."
+---
+
+Every time execution stops, pwndbg prints a context summary made up of named sections: registers, disassembly, source code, stack, backtrace, and more. The commands below let you reprint that context, toggle sections on and off, pin custom expressions to it, redirect sections to other terminals, and navigate through context history.
+
+## `context`
+
+Prints the currently enabled context sections. Running it manually is useful when you've changed debugger state (for example after `up` or `down`) but don't want to step or continue.
+
+**Alias:** `ctx`
+
+```bash
+context [--on] [--off] [-a] [subcontext ...]
+```
+
+<ParamField path="subcontext" type="string[]" optional>
+  One or more section names to display. Valid sections:
+
+  | Section | In default? | Description |
+  | :--- | :--- | :--- |
+  | `regs` | Yes | CPU registers |
+  | `disasm` | Yes | Disassembly around the current instruction |
+  | `code` | Yes | Source code (if debug info is available) |
+  | `ghidra` | Yes | Decompiler output (silent when no decompiler connected) |
+  | `stack` | Yes | Stack contents |
+  | `backtrace` | Yes | Call stack / backtrace |
+  | `expressions` | Yes | Watched expressions (see `contextwatch`) |
+  | `threads` | Yes | Thread list |
+  | `heap_tracker` | Yes | Heap allocation tracking |
+  | `last_signal` | Yes | Most recently received signal |
+  | `args` | No | Function arguments at call sites |
+
+  The default order is: `last_signal regs disasm code ghidra stack backtrace expressions threads heap_tracker`.
+  With no section arguments, all enabled sections are printed.
+</ParamField>
+
+<ParamField path="--on" type="flag" optional>
+  Re-enable a section that was previously hidden with `--off`. The section must still be present in the `context-sections` configuration list.
+</ParamField>
+
+<ParamField path="--off" type="flag" optional>
+  Hide a section from subsequent context output without removing it from the `context-sections` list.
+</ParamField>
+
+<ParamField path="-a / --all" type="flag" optional>
+  Show all available context sections, regardless of which are enabled.
+</ParamField>
+
+**Examples**
+
+```bash
+# Reprint the full context
+context
+
+# Show only registers and disassembly
+context regs disasm
+
+# Hide the stack section
+context --off stack
+
+# Show everything including normally disabled sections
+context --all
+```
+
+<Tip>
+  To see all context-related commands, run `pwndbg -c context`. To view context configuration options, run `config context`.
+</Tip>
+
+---
+
+## `regs`
+
+Prints all CPU registers with enhanced annotations — pointing out which registers contain pointers to mapped memory, strings, or other recognizable values.
+
+```bash
+regs [regs ...]
+```
+
+<ParamField path="regs" type="string[]" optional>
+  Names of specific registers to display. If omitted, all registers are shown.
+</ParamField>
+
+**Examples**
+
+```bash
+# Show all registers
+regs
+
+# Show only rip, rsp, and rbp
+regs rip rsp rbp
+```
+
+---
+
+## `contextwatch`
+
+Adds an expression to the `expressions` section of the context, so it is evaluated and displayed every time the context is printed.
+
+**Aliases:** `ctx-watch`, `cwatch`
+
+```bash
+contextwatch [{eval,execute}] expression
+```
+
+<ParamField path="cmd" type="string" optional>
+  How to evaluate the expression:
+  - `eval` (default) — evaluates it in the debugged language, like a GDB `print` expression.
+  - `execute` — runs it as a GDB command and captures the output.
+</ParamField>
+
+<ParamField path="expression" type="string">
+  The expression or GDB command to evaluate on each context update.
+</ParamField>
+
+**Examples**
+
+<CodeGroup>
+
+```bash Watch a variable
+cwatch BUF
+cwatch ITEMS[0]
+```
+
+```bash Watch a GDB command
+cwatch execute "ds BUF"
+cwatch execute "x/20x $rsp"
+cwatch execute "info args"
+```
+
+</CodeGroup>
+
+---
+
+## `contextunwatch`
+
+Removes a previously added watch expression by its index number.
+
+**Aliases:** `ctx-unwatch`, `cunwatch`
+
+```bash
+contextunwatch num
+```
+
+<ParamField path="num" type="integer">
+  The index number of the watch expression to remove. The index is shown next to each expression in the `expressions` context section.
+</ParamField>
+
+**Example**
+
+```bash
+# Remove watch expression number 2
+cunwatch 2
+```
+
+---
+
+## `contextoutput`
+
+Redirects the output of a specific context section to a file or TTY path. This lets you split pwndbg's output across multiple terminal windows — for example, displaying the stack in one pane and disassembly in another.
+
+**Alias:** `ctx-out`
+
+```bash
+contextoutput section path clearing [banner] [width] [height]
+```
+
+<ParamField path="section" type="string">
+  The section to redirect. One of: `regs`, `disasm`, `code`, `stack`, `backtrace`, `args`, `threads`, `heap_tracker`, `expressions`, `last_signal`.
+</ParamField>
+
+<ParamField path="path" type="string">
+  File or TTY path to write output to (e.g. `/dev/pts/1`).
+</ParamField>
+
+<ParamField path="clearing" type="boolean">
+  Whether to clear the output before each write. Use `True` for terminal panes that should refresh in place.
+</ParamField>
+
+<ParamField path="banner" type="string" optional>
+  Where to place the section banner. One of: `both` (default), `top`, `bottom`, `none`.
+</ParamField>
+
+<ParamField path="width" type="integer | None" optional>
+  Fixed character width for the banner. Set to `None` for automatic width.
+</ParamField>
+
+<ParamField path="height" type="integer | None" optional>
+  Maximum number of lines to display before cutting off. Applies to sections like `disasm`, `stack`, and `threads`. Set to `None` for automatic height.
+</ParamField>
+
+**Example**
+
+```bash
+# Send the stack section to a second terminal, clearing each time
+contextoutput stack /dev/pts/1 True
+
+# Send disasm to a pane with a fixed 120-column width
+contextoutput disasm /dev/pts/2 True both 120 None
+```
+
+---
+
+## `contextnext`
+
+Advances forward in the context history — replaying a later saved context state without having to step the program.
+
+**Alias:** `ctxn`
+
+```bash
+contextnext [count]
+```
+
+<ParamField path="count" type="integer" optional>
+  Number of entries to move forward. Defaults to `1`.
+</ParamField>
+
+**Example**
+
+```bash
+# Move forward one entry
+ctxn
+
+# Jump forward three entries
+ctxn 3
+```
+
+---
+
+## `contextprev`
+
+Moves backward in the context history to replay an earlier saved context state.
+
+**Alias:** `ctxp`
+
+```bash
+contextprev [count]
+```
+
+<ParamField path="count" type="integer" optional>
+  Number of entries to move back. Defaults to `1`.
+</ParamField>
+
+**Example**
+
+```bash
+# Move back one entry
+ctxp
+
+# Jump back five entries
+ctxp 5
+```
+
+---
+
+## `contextsearch`
+
+Searches the context history for a string and navigates to the matching entry. Useful for finding when a particular value or instruction appeared.
+
+**Alias:** `ctxsearch`
+
+```bash
+contextsearch needle [section]
+```
+
+<ParamField path="needle" type="string">
+  The string to search for across context history entries.
+</ParamField>
+
+<ParamField path="section" type="string" optional>
+  Limit the search to a specific section (e.g. `regs`, `stack`). If omitted, all sections are searched.
+</ParamField>
+
+**Examples**
+
+```bash
+# Find the first context entry containing "0xdeadbeef"
+ctxsearch 0xdeadbeef
+
+# Search only in the stack section
+ctxsearch 0x7fffffffe000 stack
+```

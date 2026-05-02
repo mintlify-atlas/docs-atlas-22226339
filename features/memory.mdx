@@ -1,0 +1,130 @@
+---
+title: "Memory inspection, search, and leak-finding tools"
+description: "Inspect process memory with telescope and hexdump, search for patterns, navigate mappings with vmmap, and locate pointer leaks with leakfind and probeleak."
+---
+
+pwndbg provides a collection of commands for reading and navigating process memory without leaving the debugger. All addresses are color-coded by region type — stack in red, heap in green, code in blue, and so on — making it easy to orient yourself in large memory dumps.
+
+## telescope
+
+`telescope` recursively dereferences pointer chains starting at a given address and prints each word in the range with its full dereference chain. It defaults to `$sp` and 8 lines, which makes it the fastest way to inspect the stack:
+
+```text
+telescope
+telescope $rsp 16
+telescope 0x7ffd00001000 32
+telescope --reverse
+telescope --frame
+```
+
+`--reverse` shows the N addresses *before* the given address instead of after it. `--frame` shows the complete stack frame from `$rsp` to `$rbp`, which is useful for quickly seeing all locals and saved registers at once.
+
+When multiple sequential addresses hold the same value, repeated lines are collapsed automatically. Any register that points into the displayed range is annotated on its line.
+
+## vmmap
+
+`vmmap` prints the process's virtual memory map with permissions, sizes, file offsets, and backing file names:
+
+```text
+vmmap
+vmmap libc
+vmmap $rip
+vmmap --writable
+vmmap --executable
+vmmap --gaps
+```
+
+Passing an address or module name as an argument filters to only the pages that contain or match it. `--writable` and `--executable` restrict output to pages with those permissions. `--gaps` adds an extra column showing unmapped regions between pages, which is useful for understanding ASLR layout.
+
+**Aliases:** `lm`, `address`, `vprot`, `libs`
+
+### Adding custom mappings
+
+When debugging bare-metal targets or stripped firmware, the memory map may be empty or incomplete. You can add pages manually:
+
+```text
+vmmap-add 0x08000000 0x100000 rx
+vmmap-explore 0x08000000
+```
+
+`vmmap-add <start> <size> [flags]` registers a page with explicit permissions. `vmmap-explore <address>` probes the page at the given address and guesses its permissions from what is readable and executable.
+
+## hexdump
+
+`hexdump` prints a traditional hex+ASCII dump of memory at the given address or module name:
+
+```text
+hexdump $sp
+hexdump $sp 128
+hexdump libc 256
+hexdump -C py $sp 64
+```
+
+With `-C py` or `-C c` the output is formatted as a Python `bytes` literal or a C array, which makes it easy to paste raw memory into an exploit script.
+
+## search
+
+`search` scans all mapped memory (or a specific mapping) for a byte pattern, integer, pointer, string, or assembly instruction:
+
+```text
+search /bin/sh
+search -t string /bin/sh
+search -8 0xdeadbeefcafebabe
+search -p $rsp
+search --asm 'pop rdi; ret'
+search /bin/sh libc
+search -x 41424344
+search -w -t bytes \x90\x90\x90\x90
+```
+
+Results show the address, the containing mapping, and the matched value. Use `--save` to cache results and `--next` on a subsequent `search` call to intersect with the saved set — useful for narrowing down an address across multiple runs.
+
+## xinfo
+
+`xinfo` shows how a given address relates to known mappings and symbols:
+
+```text
+xinfo
+xinfo 0x7f1234567890
+xinfo $pc
+```
+
+The output includes the page the address belongs to, the offset from the page base, and any symbol at or near that address.
+
+## distance
+
+`distance` computes the signed offset between two addresses, or the offset from a single address to its page base:
+
+```text
+distance $rsp $rbp
+distance 0x555555554000 0x555555556200
+distance $rip
+```
+
+This is handy when calculating buffer overflow offsets or understanding how far a leaked address is from the start of a segment.
+
+## Finding pointer leaks
+
+### leakfind
+
+`leakfind` performs a recursive pointer scan starting from an address (default `$sp`) and reports chains of pointers that eventually reach a useful page (such as libc or the binary itself):
+
+```text
+leakfind
+leakfind $rsp --page_name=libc --max_offset=0x48 --max_depth=6
+leakfind $rbp --max_depth=4
+```
+
+Each line of output shows a dereference chain like `$rsp → 0x7ffd... → 0x7f12...` so you can see exactly which pointer to read from an exploit.
+
+### probeleak
+
+`probeleak` scans a flat region of memory for any values that look like valid pointers, and reports each pointer along with its distance from the base of the page it points into:
+
+```text
+probeleak $rsp 0x64
+probeleak $rsp 0x64 --max-distance 0x10
+probeleak $rsp 0x64 --point-to libc --max-ptrs 1 --flags rwx
+```
+
+`--point-to` restricts results to pointers that land in a mapping whose name contains the given string. `--flags` further filters by page permissions. This is useful when you know you have a leak but need to figure out which offset gives you a pointer to a specific region.

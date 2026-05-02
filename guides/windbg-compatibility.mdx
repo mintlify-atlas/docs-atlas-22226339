@@ -1,0 +1,143 @@
+---
+title: "WinDbg-compatible commands for memory, breaks, and execution"
+description: "pwndbg provides a WinDbg compatibility layer with familiar commands for memory inspection, writing, breakpoints, execution control, and symbol lookup."
+---
+
+Pwndbg implements a WinDbg compatibility layer so that analysts familiar with WinDbg's command syntax can work in GDB without relearning every command. The layer covers memory dump and write commands, breakpoint management, execution control, backtrace, and symbol lookup. Memory dump and write commands (`db`, `dq`, `eb`, `eq`, etc.) work in both GDB and LLDB. Breakpoint and execution commands (`bp`, `bl`, `bc`, `bd`, `be`, `go`, `k`) are GDB-only.
+
+## Quick reference
+
+| WinDbg command | Description | GDB/LLDB |
+| --- | --- | --- |
+| `db addr [count]` | Dump N bytes | Both |
+| `dw addr [count]` | Dump N words (2 bytes each) | Both |
+| `dd addr [count]` | Dump N dwords (4 bytes each) | Both |
+| `dq addr [count]` | Dump N qwords (8 bytes each) | Both |
+| `da addr [max]` | Dump ASCII string | Both |
+| `ds addr [max]` | Dump string | Both |
+| `dc addr [count]` | Hexdump | Both |
+| `dds addr` / `dps addr` | Dump pointers and symbols | Both |
+| `eb addr data...` | Write bytes | Both |
+| `ew addr data...` | Write words | Both |
+| `ed addr data...` | Write dwords | Both |
+| `eq addr data...` | Write qwords | Both |
+| `ez addr string` | Write null-terminated string | Both |
+| `eza addr string` | Write null-terminated string | Both |
+| `bp addr` | Set breakpoint | GDB only |
+| `bl` | List breakpoints | GDB only |
+| `bc [index]` | Clear breakpoint(s) | GDB only |
+| `bd [index]` | Disable breakpoint(s) | GDB only |
+| `be [index]` | Enable breakpoint(s) | GDB only |
+| `go` | Continue execution | GDB only |
+| `k` | Print backtrace | GDB only |
+| `ln [addr]` | List nearest symbols | Both |
+| `pc` | Step to next call instruction | Both |
+
+## Memory dump commands
+
+All dump commands take an address as their first argument. The count argument is optional and uses a sensible default.
+
+**`db addr [count]`** — Dump N bytes starting at `addr`. Default count: 64.
+
+**`dw addr [count]`** — Dump N 2-byte words. Default count: 32.
+
+**`dd addr [count]`** — Dump N 4-byte dwords. Default count: 16.
+
+**`dq addr [count]`** — Dump N 8-byte qwords. Default count: 8.
+
+```text
+pwndbg> db $rsp
+pwndbg> dw 0x7fffffffe000 16
+pwndbg> dd buf 8
+pwndbg> dq $rbp-0x40
+```
+
+**`da addr [max]`** — Dumps an ASCII string at the given address, up to `max` characters (default 256).
+
+**`ds addr [max]`** — Dumps a string at the given address. If the data is not a printable null-terminated string, suggests using `db` or `hexdump` instead.
+
+**`dc addr [count]`** — Hexdump starting at `addr`, showing `count` bytes (default 8).
+
+**`dds addr`** / **`dps addr`** — Dump pointer-sized values at `addr` and resolve each to the nearest symbol. Equivalent to pwndbg's `telescope` command. Also aliased as `kd` and `dqs`.
+
+```text
+pwndbg> da 0x402010
+pwndbg> ds argv
+pwndbg> dc $rsp 64
+pwndbg> dds $rsp
+```
+
+## Memory write commands
+
+All write commands expect hex values unless otherwise noted.
+
+**`eb addr data...`** — Write one or more bytes at `addr`. Each value is a hex byte (e.g., `41` or `0x41`).
+
+**`ew addr data...`** — Write one or more 2-byte words at `addr`.
+
+**`ed addr data...`** — Write one or more 4-byte dwords at `addr`.
+
+**`eq addr data...`** — Write one or more 8-byte qwords at `addr`.
+
+```text
+pwndbg> eb 0x402010 41 42 43 00
+pwndbg> ew $rsp 0xdead 0xbeef
+pwndbg> ed buf 0xcafebabe
+pwndbg> eq $rbp-8 0x4141414141414141
+```
+
+**`ez addr string`** — Write a null-terminated string at `addr`.
+
+**`eza addr string`** — Alias for `ez`.
+
+```text
+pwndbg> ez 0x402010 "hello"
+pwndbg> eza buf "injected"
+```
+
+## Breakpoint commands
+
+These commands are GDB-only.
+
+**`bp addr`** — Set a breakpoint at `addr`. Equivalent to `break *addr`.
+
+**`bl`** — List all breakpoints. Equivalent to `info breakpoints`.
+
+**`bc [index]`** — Clear the breakpoint at `index`. Omit `index` (or use `*`) to clear all breakpoints.
+
+**`bd [index]`** — Disable the breakpoint at `index`. Omit `index` (or use `*`) to disable all breakpoints.
+
+**`be [index]`** — Enable the breakpoint at `index`. Omit `index` (or use `*`) to enable all breakpoints.
+
+```text
+pwndbg> bp 0x401234
+pwndbg> bl
+pwndbg> bd 1
+pwndbg> be 1
+pwndbg> bc 1
+pwndbg> bc
+```
+
+## Execution and navigation
+
+**`go`** — Continue execution. GDB-only alias for `continue`.
+
+**`k`** — Print the call stack (backtrace). GDB-only alias for `bt`.
+
+**`pc`** — Step forward until the next `call` instruction. Alias for pwndbg's `nextcall` command. Available in both GDB and LLDB.
+
+```text
+pwndbg> go
+pwndbg> k
+pwndbg> pc
+```
+
+## Symbol lookup
+
+**`ln [addr]`** — List the symbols nearest to `addr`. If `addr` is omitted, uses the current program counter. Available in both GDB and LLDB.
+
+```text
+pwndbg> ln
+pwndbg> ln 0xffffffff81234567
+pwndbg> ln main+0x42
+```

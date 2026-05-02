@@ -1,21 +1,11 @@
 {
-  "$schema": "https://mintlify.com/docs.json",
-  "name": "pwndbg",
+  "projectType": "cli-tool",
+  "projectName": "pwndbg",
+  "projectDescription": "A GDB and LLDB plugin that supercharges debugging for exploit developers, reverse engineers, and CTF players with powerful commands, heap inspection, and decompiler integration.",
   "theme": "aspen",
-  "colors": {
-    "primary": "#FF6B35"
-  },
-  "navbar": {
-    "primary": {
-      "type": "github",
-      "href": "https://github.com/pwndbg/pwndbg"
-    }
-  },
-  "footer": {
-    "socials": {
-      "github": "https://github.com/pwndbg/pwndbg"
-    }
-  },
+  "primaryColor": "#FF6B35",
+  "lightColor": null,
+  "darkColor": null,
   "navigation": {
     "tabs": [
       {
@@ -106,5 +96,36 @@
         ]
       }
     ]
-  }
+  },
+  "keyFeatures": [
+    "Rich context display with registers, stack, disassembly and backtrace on every stop",
+    "glibc, jemalloc, musl (mallocng) heap inspection and visualization",
+    "Capstone + Unicorn powered disassembly and emulation with resolved operands",
+    "Decompiler integration with IDA Pro, Binary Ninja, Ghidra, and angr",
+    "Linux kernel debugging (SLUB, buddy allocator, BPF, netfilter, tasks)",
+    "ROP gadget finding via ROPgadget and ropper",
+    "Memory search, telescoping, leak finding, and ASLR manipulation",
+    "WinDbg compatibility command layer",
+    "Support for both GDB and LLDB (experimental)",
+    "Cross-architecture support including ARM, RISC-V, MIPS, and more"
+  ],
+  "publicApiSurface": [
+    "pwndbg (CLI binary)",
+    "pwndbg-lldb (CLI binary)",
+    "context command",
+    "telescope command",
+    "vmmap command",
+    "heap command",
+    "vis-heap-chunks command",
+    "nearpc / emulate commands",
+    "search command",
+    "leakfind / probeleak commands",
+    "checksec command",
+    "cyclic command",
+    "rop / ropper commands",
+    "di (decompiler-integration) command",
+    "config / theme commands",
+    "pwndbg.aglib Python API",
+    "pwndbg.dbg_mod Debugger API"
+  ]
 }

@@ -1,0 +1,270 @@
+---
+title: "Add a new command to pwndbg: a complete walkthrough"
+description: "Step-by-step guide to creating a pwndbg command: writing the file, defining arguments with argparse, choosing decorators, and registering the command."
+---
+
+Every pwndbg command is a Python function decorated with `@pwndbg.commands.Command` and registered via an import in `pwndbg/commands/__init__.py`. Commands handle all user interaction — argument parsing, error messaging, and output formatting — while delegating the actual work to `pwndbg/aglib/`. This page walks through the full process of creating a command from scratch.
+
+<Steps>
+  <Step title="Create the command file">
+    Create a new file at `pwndbg/commands/my_command.py`. The most basic working command looks like this:
+
+    ```python
+    import argparse
+    import pwndbg.commands
+
+    parser = argparse.ArgumentParser(description="Command description.")
+    parser.add_argument("arg", type=str, help="An example argument.")
+
+    @pwndbg.commands.Command(parser, category=pwndbg.commands.CommandCategory.MISC)
+    def my_command(arg: str) -> None:
+        """Print the argument"""
+        print(f"Argument is {arg}")
+    ```
+
+    The function name determines the command name: underscores become dashes, so `my_command` becomes `my-command` in the debugger.
+  </Step>
+  <Step title="Register the command">
+    Import the new file inside the `load_commands` function in `pwndbg/commands/__init__.py`:
+
+    ```python
+    import pwndbg.commands.my_command
+    ```
+
+    If your command only works in GDB, place the import inside the `if pwndbg.dbg.is_gdblib_available():` block.
+  </Step>
+  <Step title="Verify it works">
+    Start GDB with pwndbg and run the new command:
+
+    ```text
+    pwndbg> my-command foo
+    Argument is foo
+    ```
+
+    You can also check the help output at any time:
+
+    ```text
+    pwndbg> help my-command
+    ```
+  </Step>
+</Steps>
+
+## The `@pwndbg.commands.Command` decorator
+
+The decorator is defined in `pwndbg/commands/__init__.py` and accepts the following parameters:
+
+```python
+def __init__(
+    self,
+    parser_or_desc: argparse.ArgumentParser | str,
+    *,  # All further parameters are keyword-only
+    category: CommandCategory,
+    command_name: str | None = None,
+    aliases: list[str] = [],
+    examples: str = "",
+    notes: str = "",
+    only_debuggers: set[pwndbg.dbg_mod.DebuggerType] | None = None,
+    exclude_debuggers: set[pwndbg.dbg_mod.DebuggerType] | None = None,
+) -> None:
+```
+
+### `parser_or_desc`
+
+Pass an `argparse.ArgumentParser` if your command takes arguments. Pass a plain string description if it takes none.
+
+When constructing the parser, you must provide `description` and may provide `epilog`. Do not set `prog`, `usage`, or `formatter_class` — pwndbg sets these automatically.
+
+### `category`
+
+Required. Determines how the command is grouped in the output of the `pwndbg` command and in the documentation. The full enum is defined at the top of `pwndbg/commands/__init__.py`:
+
+| Value | Group shown to users |
+|-------|----------------------|
+| `CommandCategory.START` | Start |
+| `CommandCategory.NEXT` | Step/Next/Continue |
+| `CommandCategory.CONTEXT` | Context |
+| `CommandCategory.PTMALLOC2` | GLibc ptmalloc2 Heap |
+| `CommandCategory.ALLOCATORS` | Allocators |
+| `CommandCategory.BREAKPOINT` | Breakpoint |
+| `CommandCategory.MEMORY` | Memory |
+| `CommandCategory.STACK` | Stack |
+| `CommandCategory.REGISTER` | Register |
+| `CommandCategory.PROCESS` | Process |
+| `CommandCategory.LINUX` | Linux/libc/ELF |
+| `CommandCategory.DARWIN` | Darwin/libsystem/Mach-O |
+| `CommandCategory.DISASS` | Disassemble |
+| `CommandCategory.MISC` | Misc |
+| `CommandCategory.KERNEL` | Kernel |
+| `CommandCategory.INTEGRATIONS` | Integrations |
+| `CommandCategory.WINDBG` | WinDbg |
+| `CommandCategory.PWNDBG` | Pwndbg |
+| `CommandCategory.SHELL` | Shell |
+| `CommandCategory.DEV` | Developer |
+
+Run `pwndbg` inside the debugger to see all existing commands and decide where yours fits best.
+
+### `command_name`
+
+Optional. Overrides the default name derived from the function name. It is generally not needed — let the function name drive the command name. If specified, use dashes not underscores.
+
+### `aliases`
+
+A list of alternative names for the command. Useful for porting commands from other tools so users don't need to relearn names (e.g. `nearpc` has aliases `pdisass` and `u`).
+
+### `examples` and `notes`
+
+Free-form strings appended to the command help output. pwndbg adds `Examples:` and `Notes:` headers automatically — do not include them yourself.
+
+Here is how `setflag` uses both:
+
+```python
+@pwndbg.commands.Command(
+    parser,
+    aliases=["flag"],
+    category=CommandCategory.REGISTER,
+    examples="""
+On X86/X64:
+    setflag ZF 1        -- set zero flag
+    setflag CF 0        -- unset carry flag
+
+On ARM:
+    setflag Z 0         -- unset the Z cpsr/xpsr flag
+
+To see flags registers:
+    info reg eflags     -- on x86/x64
+    info reg cpsr/xpsr  -- on ARM (specific register may vary)
+    """,
+    notes="""
+This command supports flags registers that are defined for architectures in the pwndbg/regs.py file.
+    """,
+)
+@pwndbg.commands.OnlyWhenRunning
+def setflag(flag: str, value: int) -> None:
+    # ...
+```
+
+Which produces:
+
+```text
+pwndbg> help setflag
+usage: setflag [-h] flag value
+
+Modify the flags register.
+
+positional arguments:
+  flag        Flag for which you want to change the value
+  value       Value to which you want to set the flag - only valid options are 0 and 1
+
+options:
+  -h, --help  show this help message and exit
+
+Examples:
+On X86/X64:
+    setflag ZF 1        -- set zero flag
+    setflag CF 0        -- unset carry flag
+
+On ARM:
+    setflag Z 0         -- unset the Z cpsr/xpsr flag
+...
+
+Notes:
+This command supports flags registers that are defined for architectures in the pwndbg/regs.py file.
+
+Alias: flag
+```
+
+### `only_debuggers` and `exclude_debuggers`
+
+Use these when your command only works in one debugger. For example, a command that relies on GDB-only functionality:
+
+```python
+@pwndbg.commands.Command(
+    parser,
+    category=pwndbg.commands.CommandCategory.MISC,
+    only_debuggers={pwndbg.dbg_mod.DebuggerType.GDB},
+)
+def my_gdb_only_command() -> None:
+    ...
+```
+
+When using `only_debuggers`, also gate the import in `load_commands` behind `if pwndbg.dbg.is_gdblib_available():`.
+
+## Defining arguments with argparse
+
+pwndbg uses the standard `argparse.ArgumentParser` from the Python library. Every argument must have a `help=` string.
+
+Here is the full argument definition for the `setflag` command:
+
+```python
+parser = argparse.ArgumentParser(description="Modify the flags register.")
+
+parser.add_argument(
+    "flag",
+    type=str,
+    help="Flag for which you want to change the value",
+)
+
+parser.add_argument(
+    "value",
+    type=int,
+    help="Value to which you want to set the flag - only valid options are 0 and 1",
+)
+```
+
+The function signature must match the argument names and their order:
+
+```python
+def setflag(flag: str, value: int) -> None:
+```
+
+**Setting `type=int`** is special in pwndbg: arguments declared as `int` are passed through the debugger's expression evaluator, so users can pass register names, symbols, and arithmetic expressions:
+
+```text
+pwndbg> setflag ZF (1-1)
+Set flag ZF=0 in flag register eflags (old val=0x206, new val=0x206)
+pwndbg> setflag ZF $rdi
+Set flag ZF=1 in flag register eflags (old val=0x246, new val=0x246)
+pwndbg> setflag ZF (int)main^(int)main
+Set flag ZF=0 in flag register eflags (old val=0x246, new val=0x206)
+```
+
+## Choosing a command name
+
+- Prefer one or two words with no dashes: `errno`, `libcinfo`, `buddydump`
+- If the name has three or more words, use dashes: `vis-heap-chunks`
+- If porting from another tool, use the same name so users don't need to relearn it
+- Provide a short alias for long names: `vis-heap-chunks` has alias `vis`
+
+## Restricting when a command can run
+
+Most commands cannot legally run at every point in a debugging session. pwndbg provides decorator guards for common cases, all defined in `pwndbg/commands/__init__.py` and `pwndbg/aglib/proc.py`:
+
+| Decorator | When command is allowed |
+|-----------|------------------------|
+| `OnlyWhenRunning` | A process is running (live or core file) |
+| `OnlyWhenLocal` | Not debugging a remote target |
+| `OnlyWithFile` | A binary file is loaded |
+| `OnlyWhenQemuKernel` | Debugging a Linux kernel via QEMU |
+| `OnlyWhenUserspace` | Not debugging a QEMU kernel target |
+| `OnlyWithKernelDebugInfo` | Kernel has debug info available |
+| `OnlyWithKernelSymbols` | Kernel has debug symbols available |
+| `OnlyWhenPagingEnabled` | Kernel paging is enabled |
+| `OnlyWithTcache` | GLIBC was compiled with tcache support |
+| `OnlyWhenHeapIsInitialized` | The heap has been initialized |
+| `OnlyWithResolvedHeapSyms` | Heap symbols are resolved |
+
+`OnlyWithArch` (defined in `pwndbg/aglib/proc.py`) restricts a command to specific CPU architectures:
+
+```python
+@pwndbg.commands.Command(parser, category=pwndbg.commands.CommandCategory.REGISTER)
+@pwndbg.commands.OnlyWhenRunning
+@pwndbg.aglib.proc.OnlyWithArch(["x86-64", "i386"])
+def my_x86_command() -> None:
+    ...
+```
+
+Stack decorators with `@pwndbg.commands.Command` first, then the restriction decorators below it.
+
+## Implementing the command body
+
+Commands should never use `gdb` or `lldb` modules directly. All work goes through `pwndbg.aglib`. Look at existing commands in `pwndbg/commands/` that do something similar to what you need, and read [dev-notes](https://github.com/pwndbg/pwndbg/blob/dev/docs/contributing/dev-notes.md) for patterns and gotchas. When in doubt, ask on the [Discord server](https://discord.gg/x47DssnGwm).

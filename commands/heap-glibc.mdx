@@ -1,0 +1,384 @@
+---
+title: "glibc ptmalloc2 heap: chunk, bin, and arena inspection"
+description: "Commands for inspecting glibc's ptmalloc2 heap: iterate chunks, visualize layouts, inspect arenas and bins, examine tcache, and find exploit primitives."
+---
+
+Pwndbg ships a comprehensive set of commands for the glibc `ptmalloc2` allocator — the default heap used on Linux. These commands let you walk the chunk list, inspect every variety of free-list bin, visualize the heap layout, and reason about the behaviour of `malloc` and `free` at any point during a debugging session.
+
+All commands in this group require the heap to be initialized (i.e. at least one allocation has been made). Most accept an optional arena address so you can inspect non-main arenas in multi-threaded targets; when omitted, they default to the current thread's arena or heap.
+
+## Quick reference
+
+| Command | Description |
+|---|---|
+| `heap [addr_start] [addr_end]` | Iterate and print every chunk on a heap |
+| `vis-heap-chunks [count] [addr]` | Color-coded visualization of heap chunks |
+| `arena [addr]` | Print `malloc_state` struct contents |
+| `arenas` | List all arenas in the process |
+| `bins [addr] [tcache_addr]` | Print all bin types for an arena and tcache |
+| `fastbins [addr]` | Print fastbin free lists |
+| `smallbins [addr]` | Print smallbin free lists |
+| `largebins [addr]` | Print largebin free lists |
+| `unsortedbin [addr]` | Print the unsorted bin |
+| `tcache [addr]` | Print `tcache_perthread_struct` |
+| `tcachebins [addr]` | Print tcache bin free lists |
+| `malloc-chunk <addr>` | Print a single `malloc_chunk` |
+| `top-chunk [addr]` | Print the top chunk for an arena |
+| `mp` | Print the global `mp_` struct |
+| `hi <addr>` | Find which heap chunk contains an address |
+| `find-fake-fast <target_address>` | Find candidate fake fast/tcache chunks |
+| `try-free <addr>` | Simulate calling `free` on an address |
+| `track-heap {enable,disable,toggle-break}` | Track allocations and detect UAF at runtime |
+| `heap-config [filter]` | Show heap-specific configuration parameters |
+
+---
+
+## Chunk inspection
+
+### `heap`
+
+```text
+heap [-h] [-c COUNT] [-v] [-s] [addr_start] [addr_end]
+```
+
+Iterates and prints every `malloc_chunk` on a heap. Defaults to the current thread's active heap.
+
+You can walk a range of addresses, limit the number of chunks printed, or start from a specific chunk address:
+
+```text
+heap
+heap --count 20
+heap 0x555555559000
+heap 0x555555559000 0x55555555a000
+```
+
+Range mode and `--count` can be combined; walking stops when either limit is reached first.
+
+| Flag | Description |
+|---|---|
+| `addr_start` | Address of the first chunk (`malloc_chunk.prev_size` field) |
+| `addr_end` | Inclusive upper bound for chunk start addresses |
+| `-c / --count` | Maximum number of chunks to print |
+| `-v / --verbose` | Print all chunk fields, even unused ones |
+| `-s / --simple` | Print raw `malloc_chunk` struct contents |
+
+---
+
+### `malloc-chunk`
+
+```text
+malloc-chunk [-h] [-f] [-v] [-s] [-d] [-n NEXT] addr
+```
+
+Prints detailed information about a single chunk at `addr`. The address should point to the start of the `malloc_chunk` struct (the `prev_size` field).
+
+Pwndbg determines whether the chunk is allocated or free, then annotates it with the relevant bin type and flag bits (`PREV_INUSE`, `IS_MMAPED`, `NON_MAIN_ARENA`).
+
+| Flag | Description |
+|---|---|
+| `addr` | Address of the chunk |
+| `-f / --fake` | Treat as a fake chunk (skips arena checks, implies `--verbose`) |
+| `-v / --verbose` | Print all chunk fields |
+| `-s / --simple` | Print raw struct contents only |
+| `-d / --dump` | Append a hex dump of the chunk data |
+| `-n / --next N` | Also print the next `N` contiguous chunks |
+
+---
+
+### `vis-heap-chunks`
+
+```text
+vis-heap-chunks [-h] [-b] [-s] [-n] [-a] [count] [addr]
+alias: vis
+```
+
+Produces a color-coded side-by-side view of heap memory and bin labels. Each chunk gets a distinct color, bin memberships are annotated inline, and the top chunk is marked. Defaults to the current arena's active heap and shows 10 chunks.
+
+```text
+vis
+vis 20
+vis 0x555555559000
+vis 20 0x555555559000
+```
+
+<Tip>
+If you supply a large number (above `0x1000`) as the first argument without providing `addr`, pwndbg interprets it as the chunk address rather than a count.
+</Tip>
+
+| Flag | Description |
+|---|---|
+| `count` | Number of chunks to show (default: `default-visualize-chunk-number`) |
+| `addr` | Address of the first chunk |
+| `-b / --beyond-top` | Continue printing past the top chunk |
+| `-s / --no-skip` | Disable collapsing of repeated lines |
+| `-n / --no-truncate` | Show full contents of large chunks (overrides `max-visualize-chunk-size`) |
+| `-a / --all-chunks` | Show all chunks regardless of the chunk count limit |
+
+Related configuration:
+
+| Parameter | Default | Description |
+|---|---|---|
+| `default-visualize-chunk-number` | `10` | Default number of chunks displayed by `vis` |
+| `max-visualize-chunk-size` | `0` | Truncate chunk display above this size (`0` = unlimited) |
+| `vis-skip-repeating-val` | `false` | Collapse repeated pointer-sized lines |
+
+---
+
+### `hi`
+
+```text
+hi [-h] [-v] [-s] [-f] addr
+```
+
+Searches all heaps to determine whether `addr` falls inside an allocated chunk. If found, prints the enclosing chunk. With `--verbose`, also reports the byte offset from the chunk head and the distance to the chunk tail.
+
+| Flag | Description |
+|---|---|
+| `addr` | Address to look up |
+| `-v / --verbose` | Print offsets to head and tail |
+| `-s / --simple` | Print raw struct contents |
+| `-f / --fake` | Display as a chunk even if no valid arena is found |
+
+---
+
+### `top-chunk`
+
+```text
+top-chunk [-h] [addr]
+```
+
+Prints the top chunk (wilderness) for an arena. Defaults to the current thread's arena. Pass an arena address to inspect a different arena.
+
+---
+
+## Arena commands
+
+### `arena`
+
+```text
+arena [-h] [addr]
+```
+
+Prints the contents of a `malloc_state` struct. Defaults to the current thread's arena; pass `addr` to inspect another. When using the default, pwndbg also prints the arena's address and the thread ID it belongs to.
+
+---
+
+### `arenas`
+
+```text
+arenas [-h]
+```
+
+Lists all arenas in the process in a table showing the arena type, arena address, heap start address, and virtual memory mapping details. The main arena is highlighted separately from per-thread arenas.
+
+---
+
+### `mp`
+
+```text
+mp [-h]
+```
+
+Prints the contents of glibc's global `mp_` struct (`malloc_par`). This struct holds global allocator parameters such as `mmap_threshold`, `trim_threshold`, `tcache_count`, and `arena_max`. Knowing these values is useful when reasoning about allocator behavior.
+
+---
+
+## Bin commands
+
+### `bins`
+
+```text
+bins [-h] [addr] [tcache_addr]
+```
+
+Prints all bin types at once: tcache bins (if present), fastbins (glibc < 2.43), unsorted bin, smallbins, and largebins. Defaults to the current thread's arena and tcache. Pass `addr` to specify an arena address or `tcache_addr` to specify a tcache address directly.
+
+---
+
+### `fastbins`
+
+```text
+fastbins [-h] [-v] [addr]
+```
+
+Prints the fastbin free lists for an arena. Non-empty bins are shown by default; pass `--verbose` to also show empty slots.
+
+<Note>
+Fastbins were removed in glibc 2.43. Running `fastbins` against a process linked with glibc 2.43 or later will print a warning.
+</Note>
+
+| Flag | Description |
+|---|---|
+| `addr` | Arena address (defaults to current thread's arena) |
+| `-v / --verbose` | Show all fastbins, including empty ones |
+
+---
+
+### `smallbins`
+
+```text
+smallbins [-h] [-v] [addr]
+```
+
+Prints the smallbin free lists (doubly linked lists for sizes ≤ 1008 bytes on 64-bit). Non-empty bins are shown by default.
+
+| Flag | Description |
+|---|---|
+| `addr` | Arena address |
+| `-v / --verbose` | Show all smallbins, including empty ones |
+
+---
+
+### `largebins`
+
+```text
+largebins [-h] [-v] [addr]
+```
+
+Prints the largebin free lists. Each bin covers a size range; pwndbg displays the range alongside the chain. Non-empty bins are shown by default.
+
+| Flag | Description |
+|---|---|
+| `addr` | Arena address |
+| `-v / --verbose` | Show all largebins, including empty ones |
+
+---
+
+### `unsortedbin`
+
+```text
+unsortedbin [-h] [-v] [addr]
+```
+
+Prints the contents of the unsorted bin. Newly freed chunks land here before being sorted into smallbins or largebins.
+
+| Flag | Description |
+|---|---|
+| `addr` | Arena address |
+| `-v / --verbose` | Show the bin even if it is empty |
+
+---
+
+### `tcache`
+
+```text
+tcache [-h] [addr]
+```
+
+Prints the raw `tcache_perthread_struct` for a thread — the counts array and the entry pointers for each size class. Defaults to the current thread's tcache.
+
+| Flag | Description |
+|---|---|
+| `addr` | Address of the `tcache_perthread_struct` |
+
+---
+
+### `tcachebins`
+
+```text
+tcachebins [-h] [-v] [addr]
+```
+
+Prints the tcache free lists, showing the singly-linked chain and the count for each size class. Non-empty bins are shown by default.
+
+| Flag | Description |
+|---|---|
+| `addr` | Address of the tcache bins |
+| `-v / --verbose` | Show all bins, including empty ones |
+
+---
+
+## Exploit analysis
+
+### `find-fake-fast`
+
+```text
+find-fake-fast [-h] [-a] [-b] [-p] target_address [max_candidate_size]
+```
+
+Scans memory before `target_address` for values that could serve as the `size` field of a fake fastbin or tcache chunk whose data overlaps `target_address`. Useful for `house-of-spirit`-style primitives where you need to trick the allocator into returning a controlled address.
+
+```text
+find-fake-fast &__malloc_hook
+find-fake-fast &__malloc_hook 0x60
+find-fake-fast --align &__malloc_hook
+```
+
+| Flag | Description |
+|---|---|
+| `target_address` | The address you want the fake chunk to overlap |
+| `max_candidate_size` | Upper bound on fake chunk size (defaults to `global_max_fast`) |
+| `-a / --align` | Only show candidates aligned to `MALLOC_ALIGNMENT` (required for tcache and Safe Linking) |
+| `-b / --glibc-fastbin-bug` | Account for the glibc fastbin size-field width bug |
+| `-p / --partial-overwrite` | Include candidates that need only a partial overwrite |
+
+---
+
+### `try-free`
+
+```text
+try-free [-h] addr
+```
+
+Simulates calling `free(addr)` by running the same sequence of checks that glibc performs, then reporting which checks pass and which would abort. This is useful for understanding why a free call crashes or for planning a double-free exploit.
+
+Checks include pointer alignment, size validity, tcache double-free detection, fastbin head comparison, and unsorted bin integrity.
+
+```text
+try-free 0x555555559260
+```
+
+---
+
+## Runtime tracking
+
+### `track-heap`
+
+```text
+track-heap {enable,disable,toggle-break} [-b] [-r]
+```
+
+<Note>
+`track-heap` is GDB-only. It is not available under LLDB.
+</Note>
+
+Manages pwndbg's heap tracker, which instruments `malloc` and `free` to record every allocation and detect use-after-free conditions at runtime.
+
+| Subcommand | Description |
+|---|---|
+| `enable` | Start tracking heap calls |
+| `disable` | Stop tracking and remove instrumentation |
+| `toggle-break` | Toggle whether a detected UAF pauses execution |
+
+Options for `enable`:
+
+| Flag | Description |
+|---|---|
+| `-b / --hardware-breakpoints` | Force the use of hardware breakpoints |
+| `-r / --relative-addresses` | Report offsets rather than absolute addresses |
+
+---
+
+## Configuration
+
+### `heap-config`
+
+```text
+heap-config [-h] [filter_pattern]
+```
+
+Prints all heap-related configuration parameters and their current values. Pass a `filter_pattern` string to search by parameter name or description.
+
+```text
+heap-config
+heap-config tcache
+heap-config visualize
+```
+
+You can also set any parameter displayed here using the GDB `set` command:
+
+```text
+set max-visualize-chunk-size 0x500
+set vis-skip-repeating-val on
+set default-visualize-chunk-number 20
+```

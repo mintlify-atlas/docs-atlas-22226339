@@ -1,0 +1,154 @@
+---
+title: "Starting programs and attaching to running processes"
+description: "Launch a program stopped at main, the ELF entrypoint, or libc start — or attach to a running process by PID, name, partial argv, or device file."
+---
+
+These commands give you precise control over where execution stops when you first start debugging. Rather than running a process and immediately reaching `main`, you can stop at the binary entrypoint, at `__libc_start_main`, or at any symbol — or attach to a process that's already running.
+
+## `start`
+
+<Note>GDB only</Note>
+
+Starts the debugged program and stops at the first available symbol from the list `main`, `_main`, `start`, `_start`, `init`, or `_init`. If none are found, it falls back to the binary's entrypoint.
+
+**Aliases:** `main`, `init`
+
+```bash
+start [args ...]
+```
+
+<ParamField path="args" type="string[]" optional>
+  Arguments to pass to the program. Supports shell wildcards (`*`), glob expansions (`[...]`), and I/O redirection (`>`, `<`, `>>`).
+  With no arguments, uses the arguments last specified via `run` or `set args`.
+</ParamField>
+
+**Examples**
+
+```bash
+start
+start input.txt
+start -- --verbose --config /etc/app.conf
+```
+
+<Tip>
+  To clear previously set arguments and start with none, run `set args` with no arguments before `start`.
+</Tip>
+
+---
+
+## `entry`
+
+Starts the program and stops at the binary's entrypoint address. Unlike `start`, this does not search for a named symbol — it breaks exactly at the address in the ELF header.
+
+```bash
+entry [args ...]
+```
+
+<ParamField path="args" type="string[]" optional>
+  Arguments to pass to the program. Supports shell wildcards and I/O redirection. With no arguments, uses arguments last specified via `run` or `set args`.
+</ParamField>
+
+**Examples**
+
+```bash
+entry
+entry -- arg1 arg2
+```
+
+<Note>
+  The entrypoint may not be the first instruction actually executed — the dynamic linker may run first. To stop on the very first instruction, use GDB's `starti` or LLDB's `process launch -s`.
+</Note>
+
+---
+
+## `sstart`
+
+<Note>GDB only</Note>
+
+Sets a temporary breakpoint at `__libc_start_main` and runs the program. This is useful when you want to stop just before the C runtime hands control to `main`, so you can inspect the environment before any user code executes.
+
+Equivalent to: `tbreak __libc_start_main; run`
+
+```bash
+sstart
+```
+
+`sstart` takes no arguments. Use `set args` beforehand to control what arguments the program receives.
+
+---
+
+## `attachp`
+
+<Note>GDB only</Note>
+
+Attaches to a running process. Extends GDB's built-in `attach` to also accept process names and partial command-line matches — not just PIDs.
+
+When given a name, `attachp` first calls `pidof <name>`. If that finds nothing, it falls back to `ps -eo pid,args` and searches for a partial match. It can also attach to a device file.
+
+```bash
+attachp [--no-truncate] [--retry] [--user USER] [-e] [-a] [target]
+```
+
+<ParamField path="target" type="string" optional>
+  The target to attach to. Accepts:
+  - A numeric PID (e.g. `1234`)
+  - An exact process name (e.g. `nginx`)
+  - A partial command-line string (e.g. `python my_script`)
+  - A device file (e.g. `/dev/ttyUSB0`)
+
+  If omitted, uses the name of the currently loaded file.
+</ParamField>
+
+<ParamField path="--no-truncate" type="flag" optional>
+  Show the full command-line arguments without truncating long strings.
+</ParamField>
+
+<ParamField path="--retry" type="flag" optional>
+  Keep retrying until a matching process is found. Useful for attaching to processes that haven't started yet.
+</ParamField>
+
+<ParamField path="--user USER" type="string" optional>
+  Filter matches to a specific username or UID.
+</ParamField>
+
+<ParamField path="-e / --exact" type="flag" optional>
+  Require an exact match for the process name. Without this flag, partial matches are accepted.
+</ParamField>
+
+<ParamField path="-a / --all" type="flag" optional>
+  Include partial command-line matches in the search in addition to name matches.
+</ParamField>
+
+**Examples**
+
+<CodeGroup>
+
+```bash Attach by PID
+attachp 1234
+```
+
+```bash Attach by process name
+attachp nginx
+```
+
+```bash Attach by partial argv
+attachp -a "python my_exploit"
+```
+
+```bash Attach to a device file
+attachp /dev/ttyS0
+```
+
+```bash Retry until found
+attachp --retry target_process
+```
+
+```bash Filter by user
+attachp --user www-data apache2
+```
+
+</CodeGroup>
+
+<Warning>
+  You must have permission to send a signal to the target process, and it must share the same effective UID as the debugger, unless you are running as root.
+</Warning>

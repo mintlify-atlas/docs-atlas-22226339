@@ -1,81 +1,219 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
-icon: 'rocket'
+title: "Get started: essential pwndbg commands for new users"
+description: "Learn the essential pwndbg commands — context, telescope, vmmap, search, cyclic, and heap — to start debugging and developing exploits fast."
 ---
 
-## Get started in three steps
+pwndbg replaces the `gdb` and `lldb` commands with drop-in wrappers that load all of pwndbg's enhancements automatically. You use it exactly like the underlying debugger — pass a binary, set breakpoints, and step through code — but every time execution stops, pwndbg prints a rich context panel showing registers, disassembly, the stack, and call frames, all color-coded by memory region. This guide walks you through the commands you'll use in every session.
 
-Get your documentation site running locally and make your first customization.
+## Launch pwndbg
 
-### Step 1: Set up your local environment
+<Tabs>
+  <Tab title="GDB">
+    ```bash
+    pwndbg ./your-binary
+    ```
+  </Tab>
+  <Tab title="LLDB">
+    ```bash
+    pwndbg-lldb ./your-binary
+    ```
+  </Tab>
+</Tabs>
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
-    
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
+Once pwndbg loads, you'll see the `pwndbg>` prompt. The binary is loaded but not yet running.
 
-### Step 2: Deploy your changes
+## First debugging session
 
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
+<Steps>
+  <Step title="Start the program">
+    Two commands let you start a program and stop at a predictable location:
 
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
+    - **`start`** — runs the program and stops at the first convenient location (usually `main`)
+    - **`entry`** — runs the program and stops at the ELF entry point (before `main` is called)
 
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
+    ```
+    pwndbg> start
+    ```
 
-### Step 3: Go live
+    Use `entry` when you need to inspect loader behavior or when `main` is not a useful starting point.
 
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
+    ```
+    pwndbg> entry
+    ```
+  </Step>
+
+  <Step title="Read the context display">
+    Every time execution stops — at a breakpoint, after a step, or at program start — pwndbg automatically prints the context. You can also print it manually:
+
+    ```
+    pwndbg> context
+    ```
+
+    The context display has several sections:
+
+    - **REGISTERS** — all registers with resolved pointer values and color-coded memory regions
+    - **DISASM** — disassembly around the current instruction, with resolved operands and emulated branch targets
+    - **STACK** — the top of the stack, with recursive pointer dereferences
+    - **BACKTRACE** — the current call chain
+
+    <Tip>
+      Navigate the context history with `contextprev` and `contextnext` to review what the program state looked like at earlier stops.
+    </Tip>
+  </Step>
+
+  <Step title="Inspect memory with telescope">
+    `telescope` recursively dereferences a range of memory, following pointer chains until it reaches a non-pointer value. It also notes which registers point into the range.
+
+    ```
+    pwndbg> telescope $rsp
+    ```
+
+    You can specify a different address and a count:
+
+    ```
+    pwndbg> telescope 0x7ffd00001234 20
+    ```
+
+    This is especially useful for inspecting the stack, heap allocations, or any region where you expect pointer chains.
+  </Step>
+
+  <Step title="View the memory map">
+    `vmmap` prints the full virtual memory map for the process, showing each region's address range, size, permissions, and associated file.
+
+    ```
+    pwndbg> vmmap
+    ```
+
+    You can filter by name or check whether a specific address is mapped:
+
+    ```
+    pwndbg> vmmap libc
+    pwndbg> vmmap 0x7f1234560000
+    ```
+
+    This is useful for understanding ASLR slide, locating libc base, or confirming that an address is executable.
+  </Step>
+
+  <Step title="Search memory">
+    `search` scans the entire mapped address space for byte sequences, strings, integers, or pointer values.
+
+    ```
+    pwndbg> search -s "Hello, world"
+    ```
+
+    Search for a 4-byte integer value:
+
+    ```
+    pwndbg> search -4 1337
+    ```
+
+    Search for a pointer value:
+
+    ```
+    pwndbg> search -p 0x7ffd00001234
+    ```
+
+    Each result shows the address, memory region, and surrounding bytes, making it straightforward to track where a value lives across the address space.
+  </Step>
+
+  <Step title="Check binary protections">
+    Before developing an exploit, check what security mitigations the binary was compiled with:
+
+    ```
+    pwndbg> checksec
+    ```
+
+    `checksec` reports on NX, stack canaries, PIE, RELRO, Fortify, and other protections. This shapes what exploit techniques are available.
+  </Step>
+
+  <Step title="Generate a cyclic pattern">
+    `cyclic` creates a De Bruijn sequence — a pattern where every 4- or 8-byte subsequence is unique. It's the standard way to find the offset of a saved return address or other overwrite target.
+
+    Generate a 200-byte pattern:
+
+    ```
+    pwndbg> cyclic 200
+    ```
+
+    After a crash, find the offset of the value in a register (e.g., the value that overwrote `$rip`):
+
+    ```
+    pwndbg> cyclic -l 0x6161616b
+    ```
+
+    `cyclic` reports the byte offset into the pattern where that value first appears.
+  </Step>
+
+  <Step title="Inspect the heap">
+    If the program uses glibc malloc, `heap` iterates and prints all chunks on the heap, showing their address, size, and flags.
+
+    ```
+    pwndbg> heap
+    ```
+
+    Related commands for deeper heap analysis:
+
+    | Command | What it shows |
+    |---|---|
+    | `bins` | All arena bins and tcache |
+    | `tcache` | Current thread's tcache |
+    | `arena` | Arena metadata |
+    | `vis-heap-chunks` | Visual heap layout |
+    | `try-free <addr>` | What would happen if `free()` was called on this address |
+
+    <Note>
+      Heap commands require the program to have initialized its allocator — run the program at least past the first `malloc` call before using them.
+    </Note>
+  </Step>
+</Steps>
+
+## Essential command reference
+
+| Command | What it does |
+|---|---|
+| `start` | Run the program, stop at `main` |
+| `entry` | Run the program, stop at ELF entry point |
+| `context` | Print the current execution context |
+| `telescope [addr] [count]` | Recursively dereference memory |
+| `vmmap [filter]` | Print the virtual memory map |
+| `search [flags] <value>` | Search mapped memory for a value |
+| `checksec` | Show binary security mitigations |
+| `cyclic <n>` | Generate a cyclic pattern of length `n` |
+| `cyclic -l <value>` | Find the offset of a value in the pattern |
+| `heap` | Print glibc heap chunks |
+| `regs` | Print all registers with resolved values |
+| `hexdump <addr>` | Hexdump memory at an address |
+| `got` | Show the Global Offset Table |
+
+## Which debugger should you use?
+
+Both GDB and LLDB are supported, and pwndbg provides a consistent experience across both. Use this table to pick the right one for your target:
+
+| Use case | GDB | LLDB |
+|---|---|---|
+| Linux ELF binaries | Yes | Yes |
+| macOS Mach-O binaries | No | Yes |
+| Linux kernel debugging (QEMU) | Yes | Yes |
+| QEMU user-mode emulation | Yes | No |
+| Embedded (ARM Cortex-M, RISC-V) | Yes | Yes |
+
+<Note>
+  LLDB support in pwndbg is early-stage. If you encounter issues, check the [known issues tracker](https://github.com/pwndbg/pwndbg/issues?q=is%3Aissue+state%3Aopen+label%3A%22LLDB+Port%22) or ask in the [Discord server](https://discord.gg/x47DssnGwm).
+</Note>
 
 ## Next steps
 
-Now that you have your docs running, explore these key features:
-
 <CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
+  <Card title="Context display" icon="layout-panel-top" href="/features/context">
+    Learn how to customize and split the context display across multiple terminal panes.
+  </Card>
+  <Card title="Heap analysis" icon="layer-group" href="/features/heap">
+    Explore the full suite of heap inspection commands for glibc malloc, jemalloc, and musl.
+  </Card>
+  <Card title="Command reference" icon="terminal" href="/commands/start-and-attach">
+    Browse all pwndbg commands organized by category.
+  </Card>
+  <Card title="Configuration" icon="sliders" href="/guides/configuration">
+    Customize pwndbg's behavior and color theme with the `config` and `theme` commands.
+  </Card>
 </CardGroup>
-
-<Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
-</Note>

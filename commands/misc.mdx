@@ -1,0 +1,613 @@
+---
+title: "Miscellaneous pwndbg utilities for exploit development"
+description: "Assemble code, generate cyclic patterns, patch memory, inspect types, manage comments, spray memory, and configure pwndbg from inside the debugger."
+---
+
+This page covers the general-purpose utility commands that don't belong to a specific category — tools for assembly, exploit development patterns, memory manipulation, type inspection, and pwndbg's own configuration and meta-commands.
+
+## Exploit development
+
+### `asm`
+
+Assembles shellcode into bytes using pwnlib. The output is a hex string by default, but can be switched to a raw byte string. With no `--arch` override, the current debugger architecture is used.
+
+```bash
+asm [--arch ARCH] [-f {hex,string}] [-i INFILE] [shellcode ...]
+```
+
+<ParamField path="shellcode" type="string[]" optional>
+  Assembly instructions as a space-separated string (e.g. `nop` or `xor eax, eax; ret`).
+</ParamField>
+
+<ParamField path="--arch ARCH" type="string" optional>
+  Target architecture. Accepts any architecture supported by pwnlib: `amd64`, `i386`, `aarch64`, `arm`, `mips`, `riscv64`, and many others.
+</ParamField>
+
+<ParamField path="-f / --format {hex,string}" type="string" optional>
+  Output format. `hex` (default) prints a hex string; `string` prints raw bytes.
+</ParamField>
+
+<ParamField path="-i / --infile INFILE" type="string" optional>
+  Read assembly from a file instead of the command line.
+</ParamField>
+
+**Examples**
+
+```bash
+# Assemble a NOP sled
+asm nop nop nop
+
+# Assemble for aarch64 explicitly
+asm --arch aarch64 mov x0, 0
+
+# Assemble from a file
+asm -i shellcode.asm
+```
+
+---
+
+### `checksec`
+
+Prints the binary security settings for the currently loaded executable using `checksec`. Reports protections like RELRO, stack canaries, NX, PIE, SHSTK (shadow stack), and IBT (indirect branch tracking).
+
+```bash
+checksec [-f FILE]
+```
+
+<ParamField path="-f / --file FILE" type="string" optional>
+  Path to a specific binary to check. Defaults to the currently loaded file.
+</ParamField>
+
+**Example output**
+
+```text
+pwndbg> checksec
+File:     /usr/bin/bash
+Arch:     amd64
+RELRO:      Full RELRO
+Stack:      Canary found
+NX:         NX enabled
+PIE:        PIE enabled
+SHSTK:      Enabled
+IBT:        Enabled
+```
+
+---
+
+### `cyclic`
+
+Generates or searches a de Bruijn cyclic pattern. Use `cyclic` to create a pattern for fuzzing buffer sizes, then use `cyclic -o` to find the offset of a crash value in that pattern. Use `-d` to automatically scan all registers and their pointed-to memory for pattern bytes.
+
+```bash
+cyclic [-a CHARSET] [-n LENGTH] [-t SECONDS] [-o LOOKUP] [-d] [count] [filename]
+```
+
+<ParamField path="count" type="integer" optional>
+  Number of characters to generate (default: 100).
+</ParamField>
+
+<ParamField path="filename" type="string" optional>
+  Write the pattern to this file path instead of printing it.
+</ParamField>
+
+<ParamField path="-a / --alphabet CHARSET" type="string" optional>
+  Alphabet to use (default: `abcdefghijklmnopqrstuvwxyz`).
+</ParamField>
+
+<ParamField path="-n / --length LENGTH" type="integer" optional>
+  Length of unique subsequences (default: 4). Increase this for 64-bit targets where 8-byte uniqueness is required.
+</ParamField>
+
+<ParamField path="-o / --lookup LOOKUP" type="string | integer" optional>
+  Find the offset of a value in the pattern. Accepts a register expression (e.g. `$rsp`) or a numeric value.
+</ParamField>
+
+<ParamField path="-d / --detect" type="flag" optional>
+  Scan all registers and memory they point to for cyclic pattern bytes, then print the offset for each match.
+</ParamField>
+
+**Examples**
+
+```bash
+# Generate 200 characters
+cyclic 200
+
+# Find the offset of the value in $rsp after a crash
+cyclic -o $rsp
+
+# Auto-scan all registers for pattern bytes
+cyclic -d
+
+# Generate an 8-byte unique pattern for 64-bit targets
+cyclic -n 8 500
+```
+
+<Note>
+  To write a cyclic pattern directly into memory, use the `spray` command.
+</Note>
+
+---
+
+### `cymbol`
+
+<Note>GDB only</Note>
+
+Adds custom C type definitions to the debugger, making them available for use with `dt`, `print`, and other GDB type-aware commands. Uses `zig` (or an optional `gcc`) to compile headers to the target architecture.
+
+Subcommands:
+
+| Subcommand | Description |
+| :--- | :--- |
+| `cymbol add [--force] name` | Create a new custom structure and load it |
+| `cymbol remove name` | Remove and unload a structure |
+| `cymbol edit name` | Open the definition in an editor and reload |
+| `cymbol load name` | Load a previously added structure |
+| `cymbol show name` | Print the structure definition |
+| `cymbol show-all` | List all stored structure names |
+| `cymbol file [--name NAME] [--force] [--quiet] path` | Add and load structures from a header file |
+
+**Example**
+
+```bash
+# Load all structs from a local header, silently
+cymbol file --force --quiet ./structs.h
+```
+
+<Tip>
+  Add `cymbol file --force --quiet ./structs.h` to a folder-local `.gdbinit` to load your custom types automatically on every session.
+</Tip>
+
+<Note>
+  Use unique struct names to avoid conflicts with existing debugger types.
+  Structures are saved to `~/.cache/pwndbg/custom-structures/`.
+</Note>
+
+---
+
+### `dt`
+
+Dumps the field layout of a C type, with optional overlay at a specific address. Similar to WinDbg's `dt` command.
+
+```bash
+dt typename [address]
+```
+
+<ParamField path="typename" type="string">
+  The type name to inspect. Quote names containing spaces (e.g. `"struct malloc_state"`).
+</ParamField>
+
+<ParamField path="address" type="address" optional>
+  If given, overlays the type at this address and shows the current field values.
+</ParamField>
+
+**Examples**
+
+```bash
+# Show field offsets for ucontext_t
+dt ucontext_t
+
+# Overlay malloc_state at a specific heap address
+dt "struct malloc_state" 0x7ffff7fb8b80
+```
+
+---
+
+### `sigreturn`
+
+Displays the `SigreturnFrame` stored at a given address. Useful when crafting SROP (Sigreturn Oriented Programming) exploits: verify that the frame registers are laid out correctly before triggering the sigreturn.
+
+```bash
+sigreturn [-a] [-p] [address]
+```
+
+<ParamField path="address" type="address" optional>
+  Address to read the sigreturn frame from. Defaults to the current stack pointer.
+</ParamField>
+
+<ParamField path="-a / --all" type="flag" optional>
+  Show all fields in the frame in addition to the common registers.
+</ParamField>
+
+<ParamField path="-p / --print" type="flag" optional>
+  Show the address of each field in the frame.
+</ParamField>
+
+---
+
+### `spray`
+
+Fills a memory region with a cyclic pattern. Useful for identifying which part of a structure you control after an overflow. By default, fills to the end of the vmmap region containing `addr`.
+
+```bash
+spray [--value VALUE] [-x] addr [length]
+```
+
+<ParamField path="addr" type="address">
+  Address to start spraying at.
+</ParamField>
+
+<ParamField path="length" type="integer" optional>
+  Number of bytes to write. If omitted, sprays to the end of the containing vmmap region.
+</ParamField>
+
+<ParamField path="--value VALUE" type="string" optional>
+  Value to spray instead of a cyclic pattern. Prefix with `0x` for a big-endian hex string.
+</ParamField>
+
+<ParamField path="-x / --only-funcptrs" type="flag" optional>
+  Only overwrite memory locations whose current values point into executable pages.
+</ParamField>
+
+**Example**
+
+```bash
+# Spray a cyclic pattern over a 256-byte buffer
+spray 0x7fffffffe000 256
+```
+
+---
+
+## Memory patching
+
+### `patch`
+
+Overwrites an instruction at `address` with assembled `ins`. The original bytes are saved so the patch can be reverted with `patch-revert`.
+
+```bash
+patch [-q] address ins
+```
+
+<ParamField path="address" type="address">
+  Address of the instruction to patch.
+</ParamField>
+
+<ParamField path="ins" type="string">
+  Assembly instruction(s) to write. Multiple instructions can be separated with semicolons.
+</ParamField>
+
+<ParamField path="-q / --quiet" type="flag" optional>
+  Suppress confirmation output.
+</ParamField>
+
+**Examples**
+
+```bash
+# NOP out an instruction at the current PC
+patch $pc nop
+
+# Replace a conditional jump with an unconditional one
+patch 0x401234 jmp 0x401260
+```
+
+---
+
+### `patch-list`
+
+Lists all active patches, showing the address, byte count, and the original and replacement instructions for each.
+
+```bash
+patch-list
+```
+
+---
+
+### `patch-revert`
+
+Reverts a previously applied patch, restoring the original bytes. Pass `-1` to revert all patches at once.
+
+```bash
+patch-revert address
+```
+
+<ParamField path="address" type="address">
+  Address of the patch to revert. Use `-1` to revert all patches.
+</ParamField>
+
+**Examples**
+
+```bash
+# Revert a specific patch
+patch-revert 0x401234
+
+# Revert all patches
+patch-revert -1
+```
+
+---
+
+## Inspection
+
+### `dumpargs`
+
+Prints the arguments that will be (or were) passed to the current function call or syscall instruction. Reads values from the calling-convention registers for the current architecture.
+
+**Alias:** `args`
+
+```bash
+dumpargs [-f]
+```
+
+<ParamField path="-f / --force" type="flag" optional>
+  Force display of all argument registers, even when pwndbg cannot determine the number of parameters.
+</ParamField>
+
+---
+
+### `plist`
+
+Traverses a singly-linked list and dumps every node. Handles three list layouts: plain next-pointers, inner-embedded next-pointers of the same outer type, and inner-embedded next-pointers of the inner type (Linux-kernel-style `list_head`).
+
+```bash
+plist [-s SENTINEL] [-i INNER] [-f FIELD] [-o OFFSET] [-c COUNT] path next
+```
+
+<ParamField path="path" type="expression">
+  GDB expression evaluating to the first list node (or a pointer to it).
+</ParamField>
+
+<ParamField path="next" type="string">
+  Name of the field that points to the next node.
+</ParamField>
+
+<ParamField path="-s / --sentinel SENTINEL" type="address" optional>
+  Address that marks the end of the list (default: `0` / NULL).
+</ParamField>
+
+<ParamField path="-i / --inner INNER" type="string" optional>
+  Name of the nested inner structure that contains the `next` pointer.
+</ParamField>
+
+<ParamField path="-f / --field FIELD" type="string" optional>
+  Print only this field from each node.
+</ParamField>
+
+<ParamField path="-o / --offset OFFSET" type="integer" optional>
+  Skip this many nodes before printing (default: `0`).
+</ParamField>
+
+<ParamField path="-c / --count COUNT" type="integer" optional>
+  Maximum number of nodes to print. Defaults to `dereference-limit`.
+</ParamField>
+
+**Examples**
+
+```bash
+# Dump a simple singly-linked list starting at node_a, next field is "next"
+plist node_a next
+
+# Dump a Linux list_head-style list
+plist task_struct_ptr -i tasks next
+```
+
+---
+
+### `valist`
+
+Dumps arguments from a `va_list` in memory, reading up to `count` pointer-sized values.
+
+```bash
+valist addr [count]
+```
+
+<ParamField path="addr" type="address">
+  Address of the `va_list`.
+</ParamField>
+
+<ParamField path="count" type="integer" optional>
+  Number of arguments to dump (default: 8).
+</ParamField>
+
+---
+
+### `hex2ptr`
+
+Converts a space-separated hex byte string into a little-endian pointer value. Useful when copying raw bytes from a memory dump and needing the corresponding address.
+
+```bash
+hex2ptr hex_string
+```
+
+<ParamField path="hex_string" type="string">
+  Space-separated hex bytes, e.g. `00 70 75 c1 cd ef 59 00`.
+</ParamField>
+
+**Example**
+
+```bash
+hex2ptr "00 70 75 c1 cd ef 59 00"
+```
+
+---
+
+### `getfile`
+
+<Note>GDB only</Note>
+
+Prints the path of the currently debugged executable.
+
+```bash
+getfile
+```
+
+---
+
+## Process manipulation
+
+### `hijack-fd`
+
+Replaces an open file descriptor of the debugged process at runtime. The new target can be a file, socket, pipe, or device node. Useful for redirecting stdio to a socket during exploit development.
+
+```bash
+hijack-fd fdnum newfile
+```
+
+<ParamField path="fdnum" type="integer">
+  File descriptor number to replace.
+</ParamField>
+
+<ParamField path="newfile" type="string">
+  The replacement target. For files, use an absolute path (e.g. `/dev/null`). For sockets, use one of:
+  - `host:port` (TCP by default)
+  - `tcp://[::1]:80`
+  - `udp://example.com:53`
+  - `tcp+ipv6://example.com:80`
+</ParamField>
+
+**Examples**
+
+```bash
+# Redirect stdout to /dev/null
+hijack-fd 1 /dev/null
+
+# Redirect stderr to a local TCP socket
+hijack-fd 2 tcp://localhost:8888
+```
+
+---
+
+## Navigation
+
+### `up`
+
+<Note>GDB only</Note>
+
+Selects the stack frame that called the current one and prints it. Equivalent to GDB's `up`.
+
+```bash
+up [n]
+```
+
+<ParamField path="n" type="integer" optional>
+  Number of frames to move up (default: 1).
+</ParamField>
+
+---
+
+### `down`
+
+<Note>GDB only</Note>
+
+Selects the stack frame called by the current one and prints it. Equivalent to GDB's `down`.
+
+**Aliases:** `do`, `dow`
+
+```bash
+down [n]
+```
+
+<ParamField path="n" type="integer" optional>
+  Number of frames to move down (default: 1).
+</ParamField>
+
+---
+
+## Annotation
+
+### `comm`
+
+Adds a persistent comment to an assembly instruction at a given address. The comment is displayed in the disassembly context pane next to the instruction.
+
+```bash
+comm [--addr ADDRESS] comment
+```
+
+<ParamField path="comment" type="string">
+  The comment text to attach.
+</ParamField>
+
+<ParamField path="--addr ADDRESS" type="address" optional>
+  Address to annotate. Defaults to the current program counter.
+</ParamField>
+
+**Examples**
+
+```bash
+# Annotate the current instruction
+comm "heap pointer stored here"
+
+# Annotate a specific address
+comm --addr 0x401234 "checks license key"
+```
+
+---
+
+## Miscellaneous utilities
+
+### `ipi`
+
+<Note>GDB only</Note>
+
+Opens an interactive IPython REPL inside the GDB session. The full pwndbg Python environment is accessible, making this useful for scripting, exploration, and one-off automation.
+
+```bash
+ipi
+```
+
+---
+
+### `tips`
+
+Displays a random tip about pwndbg usage. Pass `-a` to print all tips at once.
+
+```bash
+tips [-a]
+```
+
+---
+
+### `vmmap-load`
+
+Loads virtual memory map pages from an ELF file into pwndbg's vmmap table. Useful in situations where the debugger cannot auto-detect memory layout (e.g. bare-metal or partial coredump analysis).
+
+```bash
+vmmap-load [filename]
+```
+
+<ParamField path="filename" type="string" optional>
+  Path to the ELF file to load. Defaults to the currently loaded file.
+</ParamField>
+
+---
+
+## pwndbg configuration
+
+These commands let you inspect and persist pwndbg's own settings.
+
+| Command | Description |
+| :--- | :--- |
+| `config` | Show and set general pwndbg configuration parameters |
+| `heap-config` | Show and set heap-related configuration parameters |
+| `theme` | Show and set color/theme configuration parameters |
+| `configfile` | Write current `config` settings to `~/.gdbinit-pwndbg` for persistence |
+| `themefile` | Write current `theme` settings to `~/.gdbinit-pwndbg` for persistence |
+| `version` | Print the pwndbg, GDB/LLDB, and Python versions |
+| `bugreport` | Generate a bug report with environment information |
+| `pwndbg` | List all pwndbg commands, optionally filtered by category |
+| `reload` | Reload pwndbg without restarting GDB |
+| `reinit-pwndbg` | Re-run pwndbg's initialization routines |
+
+**Examples**
+
+```bash
+# View all config options
+config
+
+# Save current theme to your gdbinit
+themefile
+
+# List all commands in the MISC category
+pwndbg -c misc
+```
+
+---
+
+## Developer commands
+
+These commands are intended for pwndbg development and debugging.
+
+| Command | Description |
+| :--- | :--- |
+| `log-level` | Set the Python logging level for pwndbg internals |
+| `memoize` | Toggle pwndbg's memoization caches on or off |
+| `profiler` | Start or stop a Python profiler for pwndbg performance analysis |
+| `dev-dump-instruction` | Dump the internal representation of the instruction at the current PC |
